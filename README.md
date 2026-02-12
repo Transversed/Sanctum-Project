@@ -257,13 +257,13 @@ Client                          Host
 ```
 ┌─────────────────────────────────────────────────┐
 │ Couche Transport : Noise NK (client ↔ host)     │
-│   Le host DÉCHIFFRE le transport pour router,    │
-│   mais ne voit que des ciphertexts E2E.          │
+│   Le host DÉCHIFFRE le transport pour router,   │
+│   mais ne voit que des ciphertexts E2E.         │
 ├─────────────────────────────────────────────────┤
 │ Couche E2E : Double Ratchet (client ↔ client)   │
-│   Chaque paire maintient un ratchet indépendant. │
-│   Le host ne possède jamais les clés E2E.        │
-│   Forward secrecy message par message.           │
+│   Chaque paire maintient un ratchet indépendant.│
+│   Le host ne possède jamais les clés E2E.       │
+│   Forward secrecy message par message.          │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -273,20 +273,20 @@ Client                          Host
 
 ```
 Alice                                    Bob
-  │                                        │
+  │                                       │
   ├── X3DH Bundle Request ───────────────►│  (via host relay)
-  │                                        │
+  │                                       │
   │◄── X3DH PreKey Bundle ────────────────┤  {IK_Bob, SPK_Bob, Sig(SPK), OPK_Bob}
-  │                                        │
+  │                                       │
   │  DH1 = DH(IK_Alice, SPK_Bob)          │
   │  DH2 = DH(EK_Alice, IK_Bob)           │
   │  DH3 = DH(EK_Alice, SPK_Bob)          │
   │  DH4 = DH(EK_Alice, OPK_Bob)          │
-  │  SK = KDF(DH1 ‖ DH2 ‖ DH3 [‖ DH4])   │
-  │                                        │
+  │  SK = KDF(DH1 ‖ DH2 ‖ DH3 [‖ DH4])    │
+  │                                       │
   ├── Initial Message ───────────────────►│  {IK_Alice, EK_Alice, OPK_id, ciphertext}
-  │                                        │
-  │  [Double Ratchet initialisé]           │
+  │                                       │
+  │  [Double Ratchet initialisé]          │
 ```
 
 **Clés X3DH** :
@@ -416,18 +416,18 @@ HandshakeInit {
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Infrastructure                             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
-│  │TorControl│ │SqliteStore│ │SequoiaPGP│ │ProtobufCodec    │   │
-│  └─────┬─────┘ └────┬─────┘ └────┬─────┘ └───────┬─────────┘   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
+│  │TorControl│ │SqliteStore│ │SequoiaPGP│ │ProtobufCodec    │    │
+│  └─────┬─────┘ └────┬─────┘ └────┬─────┘ └───────┬─────────┘    │
 │════════╪════════════╪════════════╪════════════════╪═════════════│
 │        │    Application (Use Cases / Services)    │             │
 │  ┌─────▼────────────▼────────────▼────────────────▼──────────┐  │
 │  │  HostService │ ClientService │ RoomService │ AuthService  │  │
-│  └─────┬────────┴───────┬───────┴──────┬──────┴──────┬──────┘  │
+│  └─────┬────────┴───────┬───────┴──────┬──────┴──────┬──────┘   │
 │════════╪════════════════╪══════════════╪═════════════╪══════════│
-│        │         Domain (Entities & Ports)          │          │
+│        │         Domain (Entities & Ports)          │           │
 │  ┌─────▼────────────────▼──────────────▼─────────────▼───────┐  │
-│  │  Room │ Member │ Message │ Identity │ Session │ Invite   │  │
+│  │  Room │ Member │ Message │ Identity │ Session │ Invite    │  │
 │  │                                                           │  │
 │  │  Ports (Traits) :                                         │  │
 │  │  TransportPort, StoragePort, CryptoPort,                  │  │
@@ -551,11 +551,11 @@ sanctum chat <room_id>
       │
       ▼
 ┌─────────────────┐
-│  Connect & Auth  │  ClientService + AuthService
+│  Connect & Auth │  ClientService + AuthService
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  Fetch Backlog   │  Si persistant : RoomService::fetch_backlog()
+│  Fetch Backlog  │  Si persistant : RoomService::fetch_backlog()
 └────────┬────────┘
          ▼
 ┌──────────────────────────────────────────────┐
@@ -579,7 +579,7 @@ sanctum chat <room_id>
     Ctrl-C / /exit / erreur fatale
          ▼
 ┌─────────────────┐
-│ Shutdown         │  zeroize, restaurer terminal, disconnect
+│ Shutdown        │  zeroize, restaurer terminal, disconnect
 └─────────────────┘
 ```
 
@@ -1017,26 +1017,26 @@ sanctum export-manifest                   # Manifeste NFO du release
 #### 11.3.1 Layout terminal
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ SANCTUM │ #ops-room │ ephemeral │ 3 peers │ Tor: ✓      │  ← Status bar
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│ [12:03] alice: rendez-vous à 14h                        │  ← Zone messages
-│ [12:04] bob: reçu, je serai là                          │     (scrollback)
-│ [12:05] ── charlie a rejoint la room ──                 │
-│ [12:05] charlie: salut tout le monde                    │
-│ [12:07] alice: charlie, bienvenue                       │
-│                                                         │
-├─────────────────────────────────────────────────────────┤
-│ > _                                                     │  ← Ligne de saisie
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ SANCTUM │ #ops-room │ {Owner} alice │ ephemeral │ 3 peers │ Tor: ✓      │  ← Status bar
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│ [12:03] {Owner}  alice: rendez-vous à 14h                               │  ← Zone messages
+│ [12:04] {Member} bob: reçu, je serai là                                 │     (scrollback)
+│ [12:05] ── charlie a rejoint la room ──                                 │
+│ [12:05] {Member} charlie: salut tout le monde                           │
+│ [12:07] {Owerner} alice: charlie, bienvenue                             │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│ > _                                                                     │  ← Ligne de saisie
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Composants** :
 
 | Zone | Contenu | Mise à jour |
 |------|---------|------------|
-| **Status bar** (ligne 1) | Nom room, mode (ephemeral/persistent), pairs connectés, santé Tor (✓/✗/⟳), rôle | Réactive (événements) |
+| **Status bar** (ligne 1) | Nom room, identitée et rôle , mode (ephemeral/persistent), pairs connectés, santé Tor (✓/✗/⟳) | Réactive (événements) |
 | **Zone messages** | Messages horodatés, événements système (join/leave/revoke), backlog au connect | Temps réel (push via event bus) |
 | **Ligne de saisie** | Prompt `> `, édition readline-like (historique, curseur), slash commands | Input utilisateur |
 
@@ -1975,11 +1975,11 @@ strace -e trace=open,openat,creat -f sanctum host create test --mode ephemeral 2
 
 ---
 
-*Fin du Dossier d'Architecture Sanctum v0.1*
+*Fin du Dossier d'Architecture Sanctum v0.2*
 
 ```
 ┌──────────────────────────────────────┐
-│  "In the shadows, we communicate."   │
+│     "Privacy is no more a Myth"      │
 │          — Sanctum Project           │
 └──────────────────────────────────────┘
 ```
