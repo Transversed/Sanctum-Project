@@ -501,6 +501,7 @@ trait TorPort {
 | `AuthService` | Challenge-response PGP | Identity, Crypto |
 | `RoomService` | CRUD rooms, membres, invitations, backlog | Storage |
 | `MessageService` | Chiffrement/déchiffrement E2E, anti-replay, padding | Crypto |
+| **`ChatSession`** | **★ Orchestration session interactive stateful** | **Tous via services ci-dessus + UiPort** |
 
 **Modèle d'événements** :
 
@@ -523,6 +524,121 @@ enum SanctumEvent {
 }
 ```
 
+#### 5.3.1 `ChatSession` — Use case session interactive (ADR-016)
+
+`ChatSession` est le **use case principal** de Sanctum côté client. Il orchestre une session de chat interactive en coordonnant des tâches async concurrentes.
+
+**Responsabilités** : connecter/authentifier via `ClientService` + `AuthService`, démarrer les boucles async (réception, saisie, maintenance), router les événements entre réseau/crypto/UI, gérer le cycle de vie session et garantir le nettoyage des secrets au shutdown.
+
+```rust
+pub struct ChatSession<T, C, I, S, U>
+where
+    T: TransportPort, C: CryptoPort, I: IdentityPort, S: StoragePort, U: UiPort,
+{
+    client: ClientService<T, C, I>,
+    messages: MessageService<C>,
+    room: RoomService<S>,
+    ui: U,
+    event_tx: broadcast::Sender<ChatEvent>,
+    shutdown: CancellationToken,
+}
+```
+
+**Cycle de vie** :
+
+```
+sanctum chat <room_id>
+      │
+      ▼
+┌─────────────────┐
+│  Connect & Auth  │  ClientService + AuthService
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  Fetch Backlog   │  Si persistant : RoomService::fetch_backlog()
+└────────┬────────┘
+         ▼
+┌──────────────────────────────────────────────┐
+│         Boucle Principale (tokio::select!)   │
+│                                              │
+│  Task 1: network_recv_loop                   │
+│    transport.recv → decrypt → event_tx       │
+│                                              │
+│  Task 2: input_loop                          │
+│    ui.read_input → parse → encrypt → send    │
+│                                              │
+│  Task 3: maintenance_loop (persistant seul.) │
+│    gc_interval → purge_expired               │
+│                                              │
+│  Task 4: render_loop                         │
+│    event_rx → ui.print_*                     │
+│                                              │
+│  Tous partagent un CancellationToken         │
+└──────────────────────────────────────────────┘
+         │
+    Ctrl-C / /exit / erreur fatale
+         ▼
+┌─────────────────┐
+│ Shutdown         │  zeroize, restaurer terminal, disconnect
+└─────────────────┘
+```
+
+En mode éphémère, la maintenance loop n'est **pas démarrée** (pas de storage, pas de GC). Aucune tâche ne touche le disque.
+
+#### 5.3.2 Bus d'événements : `ChatEvent`
+
+Le bus utilise un `tokio::sync::broadcast` channel. `ChatEvent` relie les tâches async au renderer UI.
+
+```rust
+enum ChatEvent {
+    // Messages
+    IncomingMessage { sender: Fingerprint, sender_display: String, content: String, timestamp: u64, seq: u64 },
+    OutgoingMessage { content: String, timestamp: u64 },
+    // Système
+    PeerJoined { fingerprint: Fingerprint, display: String },
+    PeerLeft { fingerprint: Fingerprint, display: String },
+    PeerRevoked { fingerprint: Fingerprint, display: String },
+    // Session
+    Connected { room_id: RoomId, role: Role, peers: Vec<PeerInfo> },
+    Disconnected { reason: String },
+    BacklogStart { count: u32 },
+    BacklogEnd,
+    // Crypto & maintenance
+    RatchetReKeyed { peer: Fingerprint },
+    BacklogPurged { count: u64 },
+    TorStatusChanged { connected: bool },
+    ProtocolError(SanctumError),
+}
+```
+
+#### 5.3.3 Port UI (`UiPort`)
+
+Sixième port du domain, abstrait le rendu et la saisie :
+
+```rust
+trait UiPort: Send + Sync {
+    async fn read_input(&self) -> Result<String>;
+    fn print_message(&self, sender: &str, content: &str, timestamp: u64);
+    fn print_own_message(&self, content: &str, timestamp: u64);
+    fn print_system(&self, text: &str);
+    fn print_backlog_start(&self, count: u32);
+    fn print_backlog_end(&self);
+    fn update_status(&self, status: &SessionStatus);
+    fn init(&self) -> Result<()>;
+    fn cleanup(&self) -> Result<()>;
+}
+```
+
+**Adaptateurs** :
+
+| Adaptateur | Implémente | Usage | Crate |
+|-----------|-----------|-------|-------|
+| `TerminalLineRenderer` | `UiPort` | MVP : rendu line-based interactif | `crossterm` |
+| `RatatuiRenderer` | `UiPort` | v0.2 : TUI plein écran | `ratatui` + `crossterm` |
+| `MockUiAdapter` | `UiPort` | Tests : capture événements dans un Vec | — |
+| `NullUiAdapter` | `UiPort` | Mode non-interactif (`send`/`read`) | — |
+
+
 ### 5.4 Couche Infrastructure (`sanctum-infra`)
 
 | Adaptateur | Implémente | Crate |
@@ -534,6 +650,7 @@ enum SanctumEvent {
 | `SequoiaIdentityAdapter` | `IdentityPort` | `sequoia-openpgp` |
 | `RatchetCryptoAdapter` | `CryptoPort` | `x25519-dalek`, Double Ratchet custom |
 | `ProtobufCodec` | sérialisation | `prost` |
+| **`TerminalLineRenderer`** | **`UiPort`** | **`crossterm`** |
 
 ### 5.5 Modèle d'erreurs
 
@@ -827,41 +944,143 @@ Automatisation via `TorPort` de la gestion des fichiers `.auth` pour HS v3.
 
 ---
 
+
 ## 11. UX Terminal
 
-### 11.1 Commandes CLI MVP
+### 11.1 Philosophie UX
+
+Le workflow principal de Sanctum est une **session de chat interactive en temps réel** dans le terminal. L'utilisateur rejoint une room et entre immédiatement dans un mode conversationnel persistant, analogue à IRC/WeeChat, pas dans une succession de commandes one-shot.
+
+**Hiérarchie des modes d'interaction** :
+
+| Mode | Priorité | Usage |
+|------|----------|-------|
+| **Session interactive** (`sanctum chat`) | **Primaire** | Usage humain quotidien |
+| Commandes one-shot (`send`, `read`) | Secondaire | Scripts, bots, debug, pipes unix |
+| TUI plein écran (`ratatui`, v0.2) | Futur | Remplace le mode interactif CLI brut |
+
+### 11.2 Commandes CLI MVP
 
 ```
+# ─── Gestion du profil ────────────────────────────
 sanctum init                              # Initialiser un profil (~/.sanctum/)
 sanctum identity import <keyfile>         # Importer une clé PGP
 sanctum identity show                     # Afficher fingerprint
 
-sanctum host create <name>                # Créer et héberger une room
+# ─── Hébergement ──────────────────────────────────
+sanctum host create <room_name>           # Créer et héberger une room
     --mode ephemeral|persistent           #   défaut: ephemeral
     --port 9738                           #   port HS
     --max-members 10
     --backlog-max 500                     #   persistant uniquement
     --backlog-hours 72
+    --chat                                #   ouvrir la session interactive immédiatement
 
-sanctum host status                       # Statut du host
-sanctum host stop                         # Arrêter
+sanctum host status                       # Statut du host (non-interactif)
+sanctum host stop                         # Arrêter le host
 
+# ─── Rejoindre & Chatter (WORKFLOW PRINCIPAL) ─────
 sanctum join <invite_token>               # Rejoindre une room
-sanctum leave <room_id>                   # Quitter
+    --chat                                #   ouvrir session interactive après join (DÉFAUT)
+    --no-chat                             #   rejoindre sans ouvrir la session
 
-sanctum room list                         # Lister les rooms
+sanctum chat <room_id>                    # ★ OUVRIR UNE SESSION INTERACTIVE
+    --backlog <n>                         #   afficher les n derniers msgs backlog (défaut: 50)
+
+# ─── Commandes non-interactives (secondaires) ─────
+sanctum send <room_id> <message>          # Envoyer un message (scripts/debug)
+sanctum read <room_id>                    # Lire les messages (batch, scripts)
+    --follow                              #   mode streaming (tail -f like)
+    --last <n>                            #   n derniers messages
+    --json                                #   sortie structurée pour scripts
+
+# ─── Gestion des rooms ───────────────────────────
+sanctum room list                         # Lister les rooms connues
 sanctum room members <room_id>            # Lister les membres
 sanctum room invite <room_id> <fp> [--role admin|member]
 sanctum room revoke <room_id> <fp>
+sanctum leave <room_id>                   # Quitter définitivement une room
 
-sanctum send <room_id> <message>          # Envoyer
-sanctum read <room_id>                    # Lire (batch/polling)
-
-sanctum status                            # Statut global
-sanctum export-manifest                   # NFO du release
+# ─── Système ─────────────────────────────────────
+sanctum status                            # Statut global (Tor, rooms, identité)
+sanctum export-manifest                   # Manifeste NFO du release
 ```
 
-### 11.2 Configuration (`~/.sanctum/config.toml`)
+**Comportement par défaut** :
+
+- `sanctum join <token>` **ouvre automatiquement la session interactive** après authentification réussie (équivalent à `join --chat`). Raison : dans 95% des cas, l'utilisateur veut chatter immédiatement. `--no-chat` existe pour les cas scriptés.
+- `sanctum host create ... --chat` permet à l'host d'entrer en mode interactif dans sa propre room immédiatement après création.
+- `sanctum chat <room_id>` est la commande dédiée pour ouvrir (ou ré-ouvrir) une session interactive sur une room déjà rejointe.
+
+### 11.3 Session Interactive — Spécification
+
+#### 11.3.1 Layout terminal
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ SANCTUM │ #ops-room │ ephemeral │ 3 peers │ Tor: ✓      │  ← Status bar
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ [12:03] alice: rendez-vous à 14h                        │  ← Zone messages
+│ [12:04] bob: reçu, je serai là                          │     (scrollback)
+│ [12:05] ── charlie a rejoint la room ──                 │
+│ [12:05] charlie: salut tout le monde                    │
+│ [12:07] alice: charlie, bienvenue                       │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│ > _                                                     │  ← Ligne de saisie
+└─────────────────────────────────────────────────────────┘
+```
+
+**Composants** :
+
+| Zone | Contenu | Mise à jour |
+|------|---------|------------|
+| **Status bar** (ligne 1) | Nom room, mode (ephemeral/persistent), pairs connectés, santé Tor (✓/✗/⟳), rôle | Réactive (événements) |
+| **Zone messages** | Messages horodatés, événements système (join/leave/revoke), backlog au connect | Temps réel (push via event bus) |
+| **Ligne de saisie** | Prompt `> `, édition readline-like (historique, curseur), slash commands | Input utilisateur |
+
+**Implémentation MVP** : Rendu **line-based** simple via `crossterm` (raw mode + gestion curseur). Quand un message arrive pendant la saisie, la ligne de saisie est temporairement effacée, le message imprimé, puis la ligne restaurée (technique standard IRC CLI).
+
+#### 11.3.2 Slash commands (MVP minimal)
+
+| Commande | Action |
+|----------|--------|
+| `/help` | Afficher les commandes disponibles |
+| `/exit` ou `/quit` | Quitter la session (Ctrl-C fait la même chose) |
+| `/who` | Lister les membres connectés et leurs rôles |
+| `/status` | Afficher le statut (mode, Tor, backlog, pairs) |
+| `/invite <fingerprint> [role]` | Inviter un membre (owner/admin) |
+| `/kick <fingerprint>` | Révoquer un membre (owner/admin) |
+| `/me <action>` | Message d'action (`* alice fait ceci`) |
+| `/clear` | Effacer l'écran local |
+
+**Hors MVP** (v0.2+) : `/nick`, `/topic`, `/mute`, `/export`.
+
+#### 11.3.3 Comportement temps réel
+
+- Messages entrants affichés **immédiatement** dès déchiffrement (latence = Tor + ~500ms).
+- Événements système en **lignes système** : `── alice a quitté la room ──`.
+- Backlog (persistant) affiché au connect avec séparateurs visuels :
+  ```
+  ── backlog (3 messages) ──────────────
+  [hier 23:15] bob: message offline 1
+  [hier 23:20] alice: réponse
+  ── fin du backlog ─────────────────────
+  ```
+- Perte Tor : status bar `Tor: ✗`, message système, session reste ouverte.
+
+#### 11.3.4 Sortie propre
+
+1. `Ctrl-C`, `Ctrl-D`, `/exit` → shutdown graceful
+2. Envoi message de déconnexion au host
+3. `zeroize` toutes les clés ratchet en mémoire
+4. Terminal restauré (raw mode off, curseur visible)
+5. Message : `[sanctum] Session terminée. Secrets purgés.`
+
+Signal SIGINT/SIGTERM interceptés pour le même shutdown.
+
+### 11.4 Configuration (`~/.sanctum/config.toml`)
 
 ```toml
 [identity]
@@ -885,6 +1104,12 @@ db_max_size_mb = 256
 level = "off"
 output = "stdout"
 
+[chat]
+auto_chat_on_join = true       # Session interactive après join (défaut: true)
+backlog_display = 50           # Messages backlog affichés au connect
+timestamp_format = "%H:%M"    # Format d'horodatage
+show_system_events = true      # Afficher join/leave/revoke
+
 [ui]
 banner = true
 color = true
@@ -892,9 +1117,9 @@ color = true
 
 **Précédence** : CLI flags > Env vars (`SANCTUM_*`) > config.toml > défauts.
 
-### 11.3 TUI (v0.2)
+### 11.5 TUI (v0.2)
 
-Bibliothèque : `ratatui`. Layout : rooms (gauche), messages (centre), input (bas), statut (header). Le TUI utilise les mêmes services Application — pas de logique métier dans le TUI.
+Le TUI plein écran (`ratatui`) **remplacera** le mode interactif CLI line-based. Il utilisera le même `ChatSession` (couche Application), le même bus d'événements, et les mêmes ports. Seul l'adaptateur de rendu change : `TerminalLineRenderer` → `RatatuiRenderer` (les deux implémentent `UiPort`).
 
 ---
 
@@ -971,6 +1196,8 @@ Bibliothèque : `ratatui`. Layout : rooms (gauche), messages (centre), input (ba
 | `uuid` | 1.x | Room IDs | ✅ | Faible |
 | `rand` | 0.8.x | CSPRNG | ✅ | Faible |
 | `bytes` | 1.x | Buffers | ✅ | Faible |
+| `crossterm` | 0.27.x | Raw mode terminal, input async, gestion curseur | ✅ (prérequis ratatui) | Faible |
+| `tokio-util` | 0.7.x | CancellationToken (shutdown coordonné ChatSession) | ✅ | Faible |
 
 ### 13.2 Dev dependencies
 
@@ -1031,7 +1258,8 @@ sanctum/
 │   │       │   ├── storage.rs
 │   │       │   ├── crypto.rs
 │   │       │   ├── identity.rs
-│   │       │   └── tor.rs
+│   │       │   ├── tor.rs
+│   │       │   └── ui.rs
 │   │       ├── errors.rs
 │   │       └── events.rs
 │   │
@@ -1054,7 +1282,10 @@ sanctum/
 │   │       ├── client_service.rs
 │   │       ├── auth_service.rs
 │   │       ├── room_service.rs
-│   │       └── message_service.rs
+│   │       ├── message_service.rs
+│   │       ├── chat_session.rs
+│   │       ├── chat_event.rs
+│   │       └── input_parser.rs
 │   │
 │   ├── sanctum-infra/
 │   │   ├── Cargo.toml
@@ -1065,7 +1296,8 @@ sanctum/
 │   │       ├── storage_sqlite.rs
 │   │       ├── storage_memory.rs
 │   │       ├── identity_pgp.rs
-│   │       └── codec.rs
+│   │       ├── codec.rs
+│   │       └── terminal_renderer.rs
 │   │
 │   └── sanctum-cli/
 │       ├── Cargo.toml
@@ -1077,6 +1309,7 @@ sanctum/
 │           │   ├── identity.rs
 │           │   ├── host.rs
 │           │   ├── join.rs
+│           │   ├── chat.rs
 │           │   ├── room.rs
 │           │   ├── send.rs
 │           │   ├── read.rs
@@ -1091,7 +1324,9 @@ sanctum/
 │   │   ├── messaging_test.rs
 │   │   ├── room_lifecycle_test.rs
 │   │   ├── backlog_test.rs
-│   │   └── ephemeral_no_disk_test.rs
+│   │   ├── ephemeral_no_disk_test.rs
+│   │   ├── interactive_session_test.rs
+│   │   └── chat_event_flow_test.rs
 │   └── fuzz/
 │       ├── fuzz_frame_parser.rs
 │       └── fuzz_protobuf.rs
@@ -1227,11 +1462,21 @@ sanctum/
 **Décision** : 5 crates : domain, crypto, app, infra, cli.
 **Conséquences** : Séparation enforcée par Cargo. Compilation incrémentale.
 
+### ADR-016 : Session Chat Interactive comme UX Principale
+
+**Contexte** : Le design initial proposait des commandes CLI one-shot (`send`, `read`) comme mode d'interaction principal. Cela ne correspond pas à l'usage naturel d'un outil de chat.
+**Décision** : Introduire `ChatSession` comme use case central dans la couche Application. La commande `sanctum chat <room_id>` ouvre une session interactive line-based. `sanctum join` lance cette session par défaut. Les commandes `send`/`read` restent pour scripts/debug. Ajout du port `UiPort` et de l'adaptateur `TerminalLineRenderer` (`crossterm`).
+**Options** : (1) One-shot uniquement — UX inadaptée. (2) TUI plein écran immédiat (`ratatui`) — trop lourd pour MVP. (3) ★ Session interactive CLI line-based — compromis optimal, `UiPort` permet migration transparente vers ratatui en v0.2.
+**Conséquences** : +1 port (`UiPort`), +1 use case (`ChatSession`), +1 adaptateur (`TerminalLineRenderer`), +1 dépendance (`crossterm`, prérequis ratatui, bien audité). Bus d'événements `ChatEvent` via `broadcast` channel. Tests interactifs via `MockUiAdapter`.
+**Suivi** : v0.2 → remplacer `TerminalLineRenderer` par `RatatuiRenderer` via le même `UiPort`.
+
 ---
 
 ## 16. Tests d'Acceptance & Définitions de Done
 
 ### 16.1 Tests d'Acceptance MVP
+
+#### Tests Interactifs (workflow principal)
 
 ```
 AT-01: Initialisation du Profil
@@ -1252,37 +1497,55 @@ AT-03: Création de Room Éphémère
   AND   AUCUN fichier dans ~/.sanctum/data/
   AND   token d'invitation généré
 
-AT-04: Connexion et Auth
+AT-04: Connexion, Auth et Entrée en Session Interactive
   GIVEN room éphémère active, Client possède token valide
-  WHEN  `sanctum join <token>`
+  WHEN  `sanctum join <token>` (--chat est le défaut)
   THEN  handshake Noise NK OK, challenge PGP signé/vérifié
-  AND   Client listé comme membre
+  AND   Client entre en SESSION INTERACTIVE
+  AND   status bar affiche: nom room, mode, peers, Tor ✓
+  AND   prompt de saisie `> ` visible
 
-AT-05: Envoi/Réception E2E
-  GIVEN Alice et Bob dans la même room, sessions DR initialisées
-  WHEN  Alice `sanctum send <room> "Hello Bob"`
-  THEN  Bob reçoit le message déchiffré
+AT-05: Réception de Message en Temps Réel (Interactif)
+  GIVEN Alice et Bob en session interactive dans la même room
+  WHEN  Alice tape "Hello Bob" + Entrée
+  THEN  Bob voit `[HH:MM] alice: Hello Bob` en temps réel
+  AND   délai ≤ latence Tor + 500ms
   AND   le host N'A PAS accès au plaintext
+  AND   la ligne de saisie de Bob est préservée
+
+AT-05b: Envoi/Réception Non-Interactif (Secondaire)
+  GIVEN Alice en session interactive, Bob utilise `sanctum read --follow`
+  WHEN  Alice envoie "Hello Bob"
+  THEN  Bob voit le message sur stdout en streaming
+  GIVEN Bob utilise `sanctum send <room> "Reply"`
+  THEN  Alice voit le message dans sa session interactive
 
 AT-06: Forward Secrecy
   GIVEN Alice et Bob ont échangé des messages
   WHEN  la clé ratchet actuelle est capturée
   THEN  les messages PASSÉS ne sont PAS déchiffrables
 
-AT-07: Zéro Écriture Disque (Éphémère)
+AT-07: Zéro Écriture Disque en Session Interactive (Éphémère)
   GIVEN Sanctum en mode éphémère
-  WHEN  session complète (init→host→join→send→read→stop)
-  THEN  strace ne montre AUCUN open(..., O_WRONLY|O_CREAT) sur data dir
+  WHEN  session interactive complète :
+        init → host create → join → chat (10 messages) → /exit
+  THEN  strace montre AUCUN open(..., O_WRONLY|O_CREAT) sur data dir
+  AND   aucun fichier temporaire créé par crossterm
 
-AT-08: Backlog Persistant
+AT-08: Backlog Affiché au Connect (Persistant)
   GIVEN room persistante, Bob hors ligne
-  WHEN  Alice envoie 3 messages, Bob se reconnecte
-  THEN  Bob reçoit les 3 messages, backlog purgé après livraison
+  WHEN  Alice envoie 3 messages, Bob exécute `sanctum chat <room_id>`
+  THEN  Bob voit séparateur "── backlog (3 messages) ──"
+  AND   les 3 messages avec timestamps originaux
+  AND   séparateur "── fin du backlog ──"
+  AND   puis les nouveaux messages en temps réel
 
-AT-09: Révocation de Membre
-  GIVEN Alice (owner), Bob et Charlie (members)
-  WHEN  Alice `sanctum room revoke <room> <bob_fp>`
-  THEN  Bob déconnecté, ne peut pas se reconnecter, Charlie notifié
+AT-09: Révocation via Session Interactive
+  GIVEN Alice (owner) en session, Bob et Charlie connectés
+  WHEN  Alice tape `/kick <bob_fp>`
+  THEN  Bob déconnecté, sa session affiche "[sanctum] Vous avez été révoqué."
+  AND   Charlie voit "── bob a été révoqué ──"
+  AND   Bob ne peut plus se reconnecter
 
 AT-10: Invitation Nominative
   GIVEN token pour Bob (fingerprint spécifique)
@@ -1308,15 +1571,38 @@ AT-14: Persistence au Redémarrage
   GIVEN room persistante avec membres et backlog
   WHEN  host redémarre
   THEN  room rechargée, même .onion, backlog disponible
+
+AT-15: Sortie Propre (Ctrl-C / /exit)
+  GIVEN utilisateur en session interactive
+  WHEN  Ctrl-C ou /exit
+  THEN  message de déconnexion envoyé au host
+  AND   secrets zeroize-és
+  AND   terminal restauré (raw mode off, curseur visible)
+  AND   "[sanctum] Session terminée. Secrets purgés."
+  AND   les autres membres voient "── user a quitté la room ──"
+
+AT-16: Slash Command /who
+  GIVEN 3 utilisateurs en session interactive
+  WHEN  Alice tape `/who`
+  THEN  liste affichée: fingerprint (tronqué), rôle, statut
+  AND   la liste n'est PAS envoyée sur le réseau (locale)
+
+AT-17: Perte de Connexion Tor en Session Interactive
+  GIVEN utilisateur en session interactive
+  WHEN  Tor se déconnecte temporairement
+  THEN  status bar passe à Tor: ✗
+  AND   message système "── connexion Tor perdue ──"
+  AND   session reste ouverte
+  AND   aucun crash, aucun leak de secrets
 ```
 
 ### 16.2 Définitions de Done
 
-**DoD Sécurité** : Toutes les clés utilisent `zeroize` + `mlock` ; aucun secret dans les logs ; AES-256-GCM avec nonces uniques ; Argon2id m=256M t=4 p=2 ; anti-replay vérifié par proptest ; pas de `unsafe` injustifié ; `cargo-deny` + `cargo-audit` OK.
+**DoD Sécurité** : Toutes les clés utilisent `zeroize` + `mlock` ; aucun secret dans les logs ; AES-256-GCM nonces uniques ; Argon2id m=256M t=4 p=2 ; anti-replay vérifié proptest ; pas de `unsafe` injustifié ; `cargo-deny` + `cargo-audit` OK ; shutdown graceful zeroize même si panic/Ctrl-C.
 
-**DoD QA** : Tests unitaires > 80% couverture domain/crypto ; AT-01→AT-14 passent ; fuzzing 1h sans crash ; clippy -D warnings OK ; fmt OK.
+**DoD QA** : Tests unitaires > 80% couverture domain/crypto ; AT-01→AT-17 passent ; fuzzing 1h sans crash ; clippy -D warnings OK ; fmt OK ; session interactive testée avec MockUiAdapter.
 
-**DoD OPSEC** : Mode éphémère vérifié strace ; permissions 0700/0600 ; pas de .onion/fingerprint complet dans les logs ; panic hook wipe secrets ; binaire musl statique.
+**DoD OPSEC** : Mode éphémère vérifié strace **pendant session interactive** (AT-07) ; permissions 0700/0600 ; pas de .onion/fingerprint complet dans les logs ; panic hook wipe secrets + restaure terminal ; binaire musl statique ; `crossterm` ne crée aucun fichier temporaire.
 
 ---
 
@@ -1324,20 +1610,18 @@ AT-14: Persistence au Redémarrage
 
 ### 17.1 Ordre d'implémentation (inside-out)
 
-**Phase A — Domain** : A1-A17 (entities, ports, errors, events)
+**Phase A — Domain** : A1-A18 (entities, ports incl. UiPort, errors, events)
 **Phase B — Crypto** : B1-B8 (aead, kdf, noise, x3dh, ratchet, padding)
-**Phase C — Application** : C1-C7 (auth, room, message, host, client services)
-**Phase D — Infra** : D1-D8 (codec, storage memory/sqlite, identity pgp, transport, tor control)
+**Phase C — Application** : C1-C10 (services + ChatSession + ChatEvent + InputParser)
+**Phase D — Infra** : D1-D9 (adaptateurs + TerminalLineRenderer)
 **Phase E — Proto** : E1-E2 (sanctum.proto, build.rs)
-**Phase F — CLI** : F1-F14 (main, banner, config, toutes les commandes)
-**Phase G — Tests** : G1-G7 (intégration + fuzz)
+**Phase F — CLI** : F1-F15 (main, banner, config, commandes incl. `chat`)
+**Phase G — Tests** : G1-G9 (intégration + fuzz + tests interactifs)
 **Phase H — Ops** : H1-H11 (workspace root, migrations, scripts, CI, docs)
-
-*(Voir le tableau détaillé fichier par fichier dans la section ci-dessous)*
 
 ### 17.2 Détail par fichier
 
-#### Phase A — Domain (17 fichiers)
+#### Phase A — Domain (18 fichiers)
 
 | # | Fichier | Types/Fonctions clés | Tests | ADR |
 |---|---------|---------------------|-------|-----|
@@ -1356,10 +1640,11 @@ AT-14: Persistence au Redémarrage
 | A13 | `ports/crypto.rs` | CryptoPort trait | — | 005 |
 | A14 | `ports/identity.rs` | IdentityPort trait | — | 004 |
 | A15 | `ports/tor.rs` | TorPort trait | — | 011 |
-| A16 | `errors.rs` | SanctumError enum | Display/Debug | — |
-| A17 | `events.rs` | SanctumEvent enum | serde | — |
+| **A16** | **`ports/ui.rs`** | **UiPort trait** | **—** | **016** |
+| A17 | `errors.rs` | SanctumError enum | Display/Debug | — |
+| A18 | `events.rs` | SanctumEvent enum | serde | — |
 
-#### Phase B — Crypto (8 fichiers)
+#### Phase B — Crypto (8 fichiers, inchangé)
 
 | # | Fichier | Types/Fonctions | Tests | ADR |
 |---|---------|----------------|-------|-----|
@@ -1372,23 +1657,26 @@ AT-14: Persistence au Redémarrage
 | B7 | `src/ratchet.rs` | RatchetState, encrypt, decrypt | round-trip, out-of-order, FS | 005 |
 | B8 | `src/padding.rs` | pad, unpad | round-trip, taille correcte | 010 |
 
-#### Phase C — Application (7 fichiers)
+#### Phase C — Application (10 fichiers, +3)
 
 | # | Fichier | Fonctions | Tests | ADR |
 |---|---------|-----------|-------|-----|
-| C1 | `sanctum-app/Cargo.toml` | dep: sanctum-domain | — | 015 |
+| C1 | `sanctum-app/Cargo.toml` | dep: sanctum-domain, tokio | — | 015 |
 | C2 | `src/lib.rs` | re-exports | — | — |
 | C3 | `src/auth_service.rs` | create_challenge, verify_response, sign_challenge | replay refusé, timestamp hors fenêtre | 004 |
 | C4 | `src/room_service.rs` | create_room, add/remove_member, generate/validate_invite | permissions, invite nominative | 013 |
 | C5 | `src/message_service.rs` | prepare_message, process_received, check_replay | round-trip E2E, replay, padding | 005,006,010 |
 | C6 | `src/host_service.rs` | start, accept_client, route_message, run_gc | routing, GC, rejet non-autorisé | 003 |
 | C7 | `src/client_service.rs` | connect, authenticate, send/receive_message | connexion, auth, E2E | 001,005 |
+| **C8** | **`src/chat_session.rs`** | **★ ChatSession::start(), ::shutdown(), network_recv_loop, input_loop, render_loop, maintenance_loop** | **Round-trip via MockUi, shutdown propre, zéro disque éphémère** | **016** |
+| **C9** | **`src/chat_event.rs`** | **ChatEvent enum, SystemEventKind, conversions** | **Sérialisation, conversion depuis SanctumEvent** | **016** |
+| **C10** | **`src/input_parser.rs`** | **parse_input() → Input::Message / SlashCommand / Exit** | **Tous slash commands, edge cases, unicode** | **—** |
 
-#### Phase D — Infra (8 fichiers)
+#### Phase D — Infra (9 fichiers, +1)
 
 | # | Fichier | Implémente | Tests | ADR |
 |---|---------|-----------|-------|-----|
-| D1 | `sanctum-infra/Cargo.toml` | deps | — | 015 |
+| D1 | `sanctum-infra/Cargo.toml` | deps (+ crossterm) | — | 015 |
 | D2 | `src/lib.rs` | re-exports | — | — |
 | D3 | `src/codec.rs` | Framing + Protobuf | round-trip, max size | 009 |
 | D4 | `src/storage_memory.rs` | StoragePort (RAM) | CRUD, backlog, purge | 007 |
@@ -1396,46 +1684,50 @@ AT-14: Persistence au Redémarrage
 | D6 | `src/identity_pgp.rs` | IdentityPort (sequoia) | sign/verify round-trip | 004 |
 | D7 | `src/transport.rs` | TransportPort (Noise+TCP) | handshake, send/recv | 005 |
 | D8 | `src/tor_control.rs` | TorPort (torut) | création/destruction HS (mock) | 011 |
+| **D9** | **`src/terminal_renderer.rs`** | **UiPort (TerminalLineRenderer)** | **Tests avec crossterm test backend** | **016** |
 
-#### Phase E — Proto (2 fichiers)
+#### Phase E — Proto (2 fichiers, inchangé)
 
 | # | Fichier | Purpose |
 |---|---------|---------|
 | E1 | `proto/sanctum.proto` | Tous les types de messages |
 | E2 | `sanctum-infra/build.rs` | Compilation proto→Rust |
 
-#### Phase F — CLI (14 fichiers)
+#### Phase F — CLI (15 fichiers, +1, révisé)
 
 | # | Fichier | Commande | Tests acceptance |
 |---|---------|----------|-----------------|
 | F1 | `sanctum-cli/Cargo.toml` | — | — |
-| F2 | `src/main.rs` | entry point, panic hook | — |
+| F2 | `src/main.rs` | entry point, panic hook, signal handler | AT-15 |
 | F3 | `src/banner.rs` | ASCII art | — |
-| F4 | `src/config.rs` | Config::load, merge_env | précédence |
+| F4 | `src/config.rs` | Config::load, merge_env (incl. [chat]) | précédence |
 | F5 | `commands/mod.rs` | re-exports | — |
 | F6 | `commands/init.rs` | `sanctum init` | AT-01 |
 | F7 | `commands/identity.rs` | `sanctum identity *` | AT-02 |
-| F8 | `commands/host.rs` | `sanctum host *` | AT-03, AT-14 |
-| F9 | `commands/join.rs` | `sanctum join` | AT-04 |
-| F10 | `commands/room.rs` | `sanctum room *` | AT-09, AT-10 |
-| F11 | `commands/send.rs` | `sanctum send` | AT-05 |
-| F12 | `commands/read.rs` | `sanctum read` | AT-05, AT-08 |
-| F13 | `commands/status.rs` | `sanctum status` | — |
-| F14 | `commands/export_manifest.rs` | `sanctum export-manifest` | — |
+| F8 | `commands/host.rs` | `sanctum host *` (incl. --chat) | AT-03, AT-14 |
+| F9 | `commands/join.rs` | `sanctum join` (--chat défaut, lance chat) | AT-04 |
+| **F10** | **`commands/chat.rs`** | **★ `sanctum chat <room_id>`** | **AT-04, AT-05, AT-15, AT-16, AT-17** |
+| F11 | `commands/room.rs` | `sanctum room *` | AT-09, AT-10 |
+| F12 | `commands/send.rs` | `sanctum send` (non-interactif) | AT-05b |
+| F13 | `commands/read.rs` | `sanctum read` (non-interactif) | AT-05b, AT-08 |
+| F14 | `commands/status.rs` | `sanctum status` | — |
+| F15 | `commands/export_manifest.rs` | `sanctum export-manifest` | — |
 
-#### Phase G — Tests (7 fichiers)
+#### Phase G — Tests (9 fichiers, +2)
 
 | # | Fichier | Couvre |
 |---|---------|-------|
 | G1 | `tests/integration/auth_test.rs` | AT-04, AT-10, AT-12 |
-| G2 | `tests/integration/messaging_test.rs` | AT-05, AT-06, AT-11 |
+| G2 | `tests/integration/messaging_test.rs` | AT-05, AT-05b, AT-06, AT-11 |
 | G3 | `tests/integration/room_lifecycle_test.rs` | AT-03, AT-09 |
 | G4 | `tests/integration/backlog_test.rs` | AT-08, AT-13 |
-| G5 | `tests/integration/ephemeral_no_disk_test.rs` | AT-07 |
+| G5 | `tests/integration/ephemeral_no_disk_test.rs` | AT-07 (session interactive complète) |
 | G6 | `tests/fuzz/fuzz_frame_parser.rs` | Fuzzing framing |
 | G7 | `tests/fuzz/fuzz_protobuf.rs` | Fuzzing protobuf |
+| **G8** | **`tests/integration/interactive_session_test.rs`** | **AT-05, AT-15, AT-16, AT-17** |
+| **G9** | **`tests/integration/chat_event_flow_test.rs`** | **Flux ChatSession→UiPort avec MockUi** |
 
-#### Phase H — Ops (11 fichiers)
+#### Phase H — Ops (11 fichiers, inchangé)
 
 | # | Fichier |
 |---|---------|
@@ -1448,7 +1740,7 @@ AT-14: Persistence au Redémarrage
 | H7 | `README.md` |
 | H8 | `SECURITY.md` |
 | H9 | `NFO.md` |
-| H10 | `docs/adrs/*.md` (15 fichiers) |
+| H10 | `docs/adrs/*.md` (16 fichiers, +ADR-016) |
 | H11 | `docs/runbook.md` |
 
 ### 17.3 Carte des APIs Internes (résumé)
@@ -1459,10 +1751,16 @@ AT-14: Persistence au Redémarrage
 | `domain::entities::member` | `Member`, `Role` | new, can_invite, can_revoke | app::room_service |
 | `domain::entities::message` | `MessageEnvelope` | new, validate | app::message_service |
 | `domain::entities::invite` | `InviteToken` | new, encode, decode, verify | app::room_service, cli::join |
-| `domain::ports::*` | 5 traits | voir §5.2 | app + infra |
+| `domain::ports::*` | 6 traits (incl. UiPort) | voir §5.2 | app + infra |
+| **`domain::ports::ui`** | **`UiPort`** | **read_input, print_message/own/system, backlog, status, init, cleanup** | **app::chat_session** |
 | `crypto::*` | Aead, Kdf, Noise*, Ratchet*, X3dh, Padding | voir Phase B | infra (via CryptoPort) |
-| `app::*` | 5 services | voir Phase C | cli |
-| `infra::*` | 6 adaptateurs | voir Phase D | cli |
+| `app::*` | 6 services (incl. ChatSession) | voir Phase C | cli |
+| **`app::chat_session`** | **`ChatSession`** | **start, shutdown** | **cli::chat, cli::join, cli::host** |
+| **`app::chat_event`** | **`ChatEvent`** | **— (enum)** | **app::chat_session, infra::terminal_renderer** |
+| **`app::input_parser`** | **`parse_input()`** | **parse → Input enum** | **app::chat_session** |
+| `infra::*` | 7 adaptateurs (incl. TerminalLineRenderer) | voir Phase D | cli |
+| **`infra::terminal_renderer`** | **`TerminalLineRenderer`** | **impl UiPort** | **cli** |
+
 
 ---
 
@@ -1680,8 +1978,8 @@ strace -e trace=open,openat,creat -f sanctum host create test --mode ephemeral 2
 *Fin du Dossier d'Architecture Sanctum v0.1*
 
 ```
-┌───────────────────────────────────────┐
-│      "Privacy is no more a myth"      │
-│           — Sanctum Project           │
-└───────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│  "In the shadows, we communicate."   │
+│          — Sanctum Project           │
+└──────────────────────────────────────┘
 ```
