@@ -11,7 +11,7 @@
      ▒▒█████████  █████   █████ █████  ▒▒█████ ▒▒█████████     █████    ▒▒████████   █████     █████
       ▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒     ▒▒▒▒▒      ▒▒▒▒▒▒▒▒   ▒▒▒▒▒     ▒▒▒▒▒ 
 
-                      [ ARCHITECTURE DOSSIER — CLASSIFIÉ ]
+               [ ARCHITECTURE DOSSIER — CLASSIFIÉ ]
 ```
 
 **Tor-only encrypted chat. No clearnet. No compromise.**
