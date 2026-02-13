@@ -183,5 +183,5 @@ Sanctum is experimental software in active development. It has **not been audite
 ---
 
 <div align="center">
-<i>In the shadows, we communicate.</i>
+<i>Privacy is no more a myth</i>
 </div>
