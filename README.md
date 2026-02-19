@@ -14,7 +14,7 @@
 
 **Tor-only encrypted chat. No clearnet. No compromise.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: AGPL](https://img.shields.io/badge/license-AGPL-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/status-pre--alpha-red.svg)]()
 
