@@ -1,0 +1,6 @@
+[package]
+name = "sanctum-app"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+sanctum-domain = { path = "../sanctum-domain" }

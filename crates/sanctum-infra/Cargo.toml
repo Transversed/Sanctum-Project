@@ -1,0 +1,7 @@
+[package]
+name = "sanctum-infra"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+sanctum-domain = { path = "../sanctum-domain" }
+sanctum-crypto = { path = "../sanctum-crypto" }

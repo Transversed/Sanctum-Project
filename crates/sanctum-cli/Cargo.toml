@@ -1,0 +1,11 @@
+[package]
+name = "sanctum-cli"
+version.workspace = true
+edition.workspace = true
+[[bin]]
+name = "sanctum"
+path = "src/main.rs"
+[dependencies]
+sanctum-domain = { path = "../sanctum-domain" }
+sanctum-app = { path = "../sanctum-app" }
+sanctum-infra = { path = "../sanctum-infra" }

@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/sanctum-domain",
+    "crates/sanctum-crypto",
+    "crates/sanctum-app",
+    "crates/sanctum-infra",
+    "crates/sanctum-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Sanctum Contributors"]
+license = "AGPL"
+repository = "https://github.com/sanctum-chat/sanctum"
+rust-version = "1.75"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
