@@ -1,6 +1,44 @@
 [package]
 name = "sanctum-crypto"
+description = "Cryptographic primitives: AEAD, KDF, padding, Noise, X3DH, Double Ratchet"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
 [dependencies]
 sanctum-domain = { path = "../sanctum-domain" }
+
+# AEAD ciphers
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+
+# Key derivation
+hkdf = "0.12"
+sha2 = "0.10"
+argon2 = "0.5"
+
+# X25519 Diffie-Hellman
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# Ed25519 signatures (for SPK signing)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# Noise protocol (NK handshake)
+snow = "0.9"
+
+# Cryptographic RNG
+rand = "0.8"
+
+# Secret memory management
+zeroize.workspace = true
+
+# Serialization for ratchet state
+serde.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
