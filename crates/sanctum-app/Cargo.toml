@@ -1,6 +1,22 @@
 [package]
 name = "sanctum-app"
+description = "Application services: auth, room, message, host, client, chat session"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
 [dependencies]
 sanctum-domain = { path = "../sanctum-domain" }
+
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing.workspace = true
+serde.workspace = true
+zeroize.workspace = true
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
