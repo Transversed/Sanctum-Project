@@ -41,21 +41,21 @@ Le crate `sanctum-app` est la **couche application** de Sanctum. Il orchestre le
 ```
 ┌──────────────────────────────────────────────┐
 │  CLI (sanctum-cli)                           │
-│    Appelle les services, câble les adapters   │
+│    Appelle les services, câble les adapters  │
 ├──────────────────────────────────────────────┤
 │  APP (ici) — sanctum-app                     │
-│    AuthService, RoomService, MessageService   │
-│    HostService, ClientService, ChatSession    │
-│    InputParser                                │
+│    AuthService, RoomService, MessageService  │
+│    HostService, ClientService, ChatSession   │
+│    InputParser                               │
 ├──────────────────────────────────────────────┤
 │  DOMAIN (sanctum-domain)                     │
-│    Entities, Ports (traits), Errors, Events   │
+│    Entities, Ports (traits), Errors, Events  │
 ├──────────────────────────────────────────────┤
 │  CRYPTO (sanctum-crypto)                     │
 │    AEAD, KDF, Noise, X3DH, Double Ratchet    │
 ├──────────────────────────────────────────────┤
 │  INFRA (sanctum-infra)                       │
-│    Adapters concrets (Tor, SQLite, PGP, etc.) │
+│    Adapters concrets (Tor, SQLite, PGP, etc.)│
 └──────────────────────────────────────────────┘
 ```
 
@@ -455,8 +455,8 @@ Le `ChatSession` est le **cœur** de l'expérience utilisateur. Il coordonne 4 b
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                ChatSession                       │
-│                                                  │
+│                ChatSession                      │
+│                                                 │
 │  ┌──────────────┐    ┌──────────────────────┐   │
 │  │ input_loop   │    │  network_recv_loop   │   │
 │  │ UiPort       │    │ TransportPort        │   │
@@ -468,7 +468,7 @@ Le `ChatSession` est le **cœur** de l'expérience utilisateur. Il coordonne 4 b
 │  │      ▼       │    │      ▼               │   │
 │  │ event_tx ────┼────┼─► event_tx           │   │
 │  └──────────────┘    └──────────────────────┘   │
-│                                                  │
+│                                                 │
 │  ┌──────────────┐    ┌──────────────────────┐   │
 │  │ render_loop  │    │  maintenance_loop    │   │
 │  │              │    │  (persistant seul.)  │   │
@@ -478,8 +478,8 @@ Le `ChatSession` est le **cœur** de l'expérience utilisateur. Il coordonne 4 b
 │  │ UiPort       │    │ purge backlog expiré │   │
 │  │ .print_*()   │    │                      │   │
 │  └──────────────┘    └──────────────────────┘   │
-│                                                  │
-│  Tous partagent un CancellationToken             │
+│                                                 │
+│  Tous partagent un CancellationToken            │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -499,7 +499,7 @@ Toutes les boucles communiquent via un `broadcast::channel<ChatEvent>` — un ca
 
 ```
 input_loop ──────┐
-                  ├──► broadcast::Sender<ChatEvent>
+                 ├──► broadcast::Sender<ChatEvent>
 network_recv ────┘           │
                              ├──► render_loop (Receiver)
                              └──► (autres consumers)
