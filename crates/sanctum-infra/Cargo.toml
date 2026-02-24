@@ -1,7 +1,43 @@
 [package]
 name = "sanctum-infra"
+description = "Infrastructure adapters: codec, storage, identity, transport, tor, terminal"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
 [dependencies]
 sanctum-domain = { path = "../sanctum-domain" }
-sanctum-crypto = { path = "../sanctum-crypto" }
+
+# Async
+tokio = { workspace = true, features = ["sync", "io-util", "time", "net"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Serialization / framing
+bytes = "1"
+serde.workspace = true
+serde_json = "1"
+
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Terminal
+crossterm = "0.27"
+
+# Logging
+tracing.workspace = true
+
+# Crypto helpers (for storage encryption)
+sha2 = "0.10"
+rand = "0.8"
+
+# Zeroize
+zeroize.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "io-util"] }
+tempfile = "3"
