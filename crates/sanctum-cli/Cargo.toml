@@ -1,11 +1,45 @@
 [package]
 name = "sanctum-cli"
+description = "Sanctum CLI — encrypted chat over Tor hidden services"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
 [[bin]]
 name = "sanctum"
 path = "src/main.rs"
+
 [dependencies]
 sanctum-domain = { path = "../sanctum-domain" }
 sanctum-app = { path = "../sanctum-app" }
 sanctum-infra = { path = "../sanctum-infra" }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async
+tokio = { workspace = true, features = ["full", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Config
+toml = "0.8"
+dirs = "5"
+
+# Serialization
+serde.workspace = true
+serde_json = "1"
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Terminal
+crossterm = "0.27"
+
+# Zeroize
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
