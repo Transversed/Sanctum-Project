@@ -1043,6 +1043,7 @@ dependencies = [
 name = "sanctum-cli"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap",
  "crossterm",
  "dirs",
