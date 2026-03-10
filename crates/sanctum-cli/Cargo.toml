@@ -44,3 +44,7 @@ zeroize.workspace = true
 [dev-dependencies]
 tempfile = "3"
 bytes = "1"
+
+[[example]]
+name = "chat_demo"
+path = "examples/chat_demo.rs"

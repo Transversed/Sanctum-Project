@@ -31,3 +31,8 @@ pub mod terminal_renderer;
 
 // Proto implementation 
 pub mod proto_codec;
+
+// Local test files
+pub mod tcp_transport;
+pub mod host_listener;
+pub mod client_connector;

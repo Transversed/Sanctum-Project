@@ -8,6 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+sanctum-app = { path = "../sanctum-app" }
 sanctum-domain = { path = "../sanctum-domain" }
 prost = "0.12"
 
