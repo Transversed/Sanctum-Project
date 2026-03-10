@@ -174,7 +174,7 @@ Priorities for contributions: security review, Tor integration testing, crypto p
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+AGLP — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
