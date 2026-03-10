@@ -174,7 +174,7 @@ Priorities for contributions: security review, Tor integration testing, crypto p
 
 ## License
 
-AGLP — see [LICENSE](LICENSE).
+AGPL — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
