@@ -1,0 +1,230 @@
+// Sanctum Wire Protocol — v1
+//
+// All messages are serialized as protobuf and carried inside
+// the length-prefixed Frame (see codec.rs). The Frame.type byte
+// determines which protobuf message to decode from the payload.
+
+syntax = "proto3";
+package sanctum;
+
+// ============================================================
+// Handshake (Noise NK)
+// ============================================================
+
+// C→H : 0x01
+message HandshakeInit {
+    uint32 protocol_version = 1;
+    uint32 min_supported_version = 2;
+    bytes noise_ephemeral_key = 3;     // 32 bytes X25519 ephemeral public key
+}
+
+// H→C : 0x02
+message HandshakeResp {
+    uint32 protocol_version = 1;
+    bytes noise_payload = 2;           // Noise handshake payload (encrypted)
+}
+
+// ============================================================
+// Authentication (PGP challenge-response)
+// ============================================================
+
+// H→C : 0x03
+message AuthChallenge {
+    bytes nonce = 1;                   // 32 bytes random
+    uint64 timestamp = 2;             // Unix seconds
+    string room_id = 3;
+    bytes server_id = 4;              // SHA-256(host noise static pubkey)
+}
+
+// C→H : 0x04
+message AuthResponse {
+    string fingerprint = 1;           // 40-char hex PGP fingerprint
+    bytes signature = 2;              // PGP signature over challenge bytes
+    bytes pgp_public_key = 3;         // PGP public key for verification
+    string display_alias = 4;         // User-chosen alias (max 20 chars)
+}
+
+// H→C : 0x05
+message AuthResult {
+    bool success = 1;
+    string error_message = 2;         // Set if success == false
+    string member_role = 3;           // "owner", "admin", "member"
+    RoomState room_state = 4;         // Set if success == true
+}
+
+message RoomState {
+    string room_id = 1;
+    string room_name = 2;
+    string mode = 3;                  // "ephemeral" or "persistent"
+    RoomConfig config = 4;
+    repeated MemberInfo members = 5;
+    repeated PreKeyBundle bundles = 6;
+}
+
+message RoomConfig {
+    uint32 max_members = 1;
+    uint32 backlog_max_messages = 2;
+    uint32 backlog_max_age_hours = 3;
+    uint32 message_padding_block = 4;
+}
+
+message MemberInfo {
+    string fingerprint = 1;
+    string display_alias = 2;
+    string role = 3;
+    uint64 joined_at = 4;
+}
+
+// ============================================================
+// X3DH Key Exchange
+// ============================================================
+
+message PreKeyBundle {
+    string owner_fingerprint = 1;
+    bytes identity_key = 2;           // IK: X25519 long-term public
+    bytes signed_pre_key = 3;         // SPK: X25519 signed
+    bytes spk_signature = 4;          // Signature of SPK by IK
+    repeated bytes one_time_pre_keys = 5;  // OPKs: X25519 one-time
+}
+
+// C→H : 0x21
+message PublishBundle {
+    PreKeyBundle bundle = 1;
+}
+
+// C→H : 0x22
+message RequestBundle {
+    string target_fingerprint = 1;
+}
+
+// H→C : 0x23
+message BundleResponse {
+    PreKeyBundle bundle = 1;
+    bool found = 2;
+}
+
+// H→C : 0x24
+message OPKDepleted {
+    uint32 remaining = 1;             // Number of OPKs remaining
+}
+
+// C→H : 0x25
+message RefreshOPK {
+    repeated bytes new_opks = 1;      // New one-time pre-keys
+}
+
+// ============================================================
+// Ratchet Key Exchange
+// ============================================================
+
+// C↔C (via H) : 0x20
+message RatchetKeyExchange {
+    string sender_fingerprint = 1;
+    string recipient_fingerprint = 2;
+    bytes identity_key = 3;           // Sender IK public
+    bytes ephemeral_key = 4;          // Sender EK (X3DH ephemeral)
+    uint32 opk_id = 5;               // Which OPK was used (0 = none)
+    bytes ciphertext = 6;             // Initial ciphertext (first ratchet message)
+}
+
+// ============================================================
+// Room Messages (E2E encrypted, opaque to host)
+// ============================================================
+
+// C→H / H→C : 0x10
+message RoomMessage {
+    string sender_fingerprint = 1;
+    uint64 sequence_number = 2;
+    RatchetHeader ratchet_header = 3;
+    bytes ciphertext = 4;             // AES-256-GCM ciphertext (padded)
+    bytes nonce = 5;                  // 12 bytes AEAD nonce
+    uint64 timestamp = 6;            // Unix seconds
+}
+
+message RatchetHeader {
+    bytes dh_public = 1;              // Current ratchet DH public key
+    uint32 previous_chain_length = 2;
+    uint32 message_number = 3;
+}
+
+// ============================================================
+// Room Control
+// ============================================================
+
+// C→H / H→C : 0x11
+message RoomControl {
+    oneof action {
+        AllowMember allow_member = 1;
+        RevokeMember revoke_member = 2;
+        PromoteMember promote_member = 3;
+        DemoteMember demote_member = 4;
+        UpdateConfig update_config = 5;
+    }
+}
+
+message AllowMember {
+    string fingerprint = 1;
+    string role = 2;
+}
+
+message RevokeMember {
+    string fingerprint = 1;
+}
+
+message PromoteMember {
+    string fingerprint = 1;
+    string new_role = 2;
+}
+
+message DemoteMember {
+    string fingerprint = 1;
+    string new_role = 2;
+}
+
+message UpdateConfig {
+    RoomConfig config = 1;
+}
+
+// ============================================================
+// Peer Notifications
+// ============================================================
+
+// H→all : 0x12
+message PeerReady {
+    string fingerprint = 1;
+    string display_alias = 2;
+}
+
+// ============================================================
+// Backlog (Persistent mode)
+// ============================================================
+
+// H→C : 0x30
+message BacklogStart {
+    uint32 count = 1;                 // Number of messages to follow
+}
+
+// H→C : 0x31 (empty payload)
+// BacklogEnd has no fields — presence of the frame is sufficient.
+
+// C→H : 0x32
+message BacklogAck {
+    uint64 last_sequence = 1;         // Highest seq received
+}
+
+// ============================================================
+// Keepalive
+// ============================================================
+
+// 0xFE / 0xFD : Ping and Pong have no payload.
+// They use the Frame type byte alone — no protobuf needed.
+
+// ============================================================
+// Error
+// ============================================================
+
+// 0xFF
+message ProtocolError {
+    string code = 1;                  // Machine-readable error code
+    string message = 2;              // Human-readable description
+}

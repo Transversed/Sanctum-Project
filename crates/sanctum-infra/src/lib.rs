@@ -28,3 +28,6 @@ pub mod tor_control;
 
 /// Terminal line renderer (UiPort implementation).
 pub mod terminal_renderer;
+
+// Proto implementation 
+pub mod proto_codec;

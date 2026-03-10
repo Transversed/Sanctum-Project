@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 sanctum-domain = { path = "../sanctum-domain" }
+prost = "0.12"
 
 # Async
 tokio = { workspace = true, features = ["sync", "io-util", "time", "net"] }
@@ -37,6 +38,9 @@ zeroize.workspace = true
 
 # Error handling
 thiserror.workspace = true
+
+[build-dependencies]
+prost-build = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "io-util"] }
