@@ -36,3 +36,6 @@ pub mod proto_codec;
 pub mod tcp_transport;
 pub mod host_listener;
 pub mod client_connector;
+
+/// Socks for Tor implementation
+pub mod socks;

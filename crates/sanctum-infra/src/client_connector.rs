@@ -1,13 +1,13 @@
-//! Client network connector: connect to host, authenticate, send/receive messages.
+//! Client network connector: connect to host, authenticate, send/receive.
 //!
-//! This is the client-side counterpart of host_listener.
-//! It connects via TCP (through Tor SOCKS5 in production),
-//! authenticates, then provides send/recv for the chat session.
+//! Supports two connection modes:
+//! - Direct TCP (localhost testing): connect_and_auth()
+//! - Via Tor SOCKS5 (.onion): connect_via_tor_and_auth()
 
-use crate::codec::{self, message_types, Frame};
+use crate::codec::{message_types, Frame};
 use crate::proto_codec::{self, pb, WireMessage};
+use crate::socks;
 use crate::tcp_transport::TcpTransport;
-use sanctum_app::auth_service::AuthService;
 use sanctum_domain::entities::member::Fingerprint;
 use sanctum_domain::errors::SanctumError;
 
@@ -26,30 +26,55 @@ pub struct ConnectedSession {
     pub role: String,
 }
 
-/// Connect to a host and authenticate.
-///
-/// For local testing, `addr` is "127.0.0.1:9738".
-/// For Tor, the caller first connects via SOCKS5 to get the TcpStream.
+/// Connect directly (localhost testing) and authenticate.
 pub async fn connect_and_auth(
     addr: &str,
     fingerprint: &Fingerprint,
     display_alias: &str,
     host_noise_pubkey: &[u8],
 ) -> Result<ConnectedSession, SanctumError> {
-    // Connect
     let stream = TcpStream::connect(addr)
         .await
         .map_err(|e| SanctumError::ConnectionLost(format!("connect to {addr}: {e}")))?;
 
     info!("[sanctum] connected to {addr}");
+    let transport = TcpTransport::new(stream, 0);
+    run_auth(transport, fingerprint, display_alias, host_noise_pubkey).await
+}
 
-    let mut transport = TcpTransport::new(stream, 0);
+/// Connect via Tor SOCKS5 to a .onion address and authenticate.
+pub async fn connect_via_tor_and_auth(
+    socks_addr: &str,
+    onion_address: &str,
+    onion_port: u16,
+    fingerprint: &Fingerprint,
+    display_alias: &str,
+    host_noise_pubkey: &[u8],
+) -> Result<ConnectedSession, SanctumError> {
+    info!("[sanctum] connecting to {onion_address}:{onion_port} via Tor...");
 
+    let stream = socks::connect_via_tor(socks_addr, onion_address, onion_port).await?;
+
+    info!("[sanctum] Tor connection established to {onion_address}");
+    let transport = TcpTransport::new(stream, 0);
+    run_auth(transport, fingerprint, display_alias, host_noise_pubkey).await
+}
+
+/// Run the auth handshake over an already-connected transport.
+async fn run_auth(
+    mut transport: TcpTransport,
+    fingerprint: &Fingerprint,
+    display_alias: &str,
+    host_noise_pubkey: &[u8],
+) -> Result<ConnectedSession, SanctumError> {
     // ── Phase 1: Receive auth challenge ──
     let challenge_frame = transport.recv_frame().await?;
     if challenge_frame.message_type != message_types::AUTH_CHALLENGE {
         return Err(SanctumError::AuthFailed {
-            reason: format!("expected AuthChallenge, got 0x{:02X}", challenge_frame.message_type),
+            reason: format!(
+                "expected AuthChallenge, got 0x{:02X}",
+                challenge_frame.message_type
+            ),
         });
     }
 
@@ -63,11 +88,14 @@ pub async fn connect_and_auth(
         }
     };
 
-    info!("[sanctum] received auth challenge for room {}", challenge.room_id);
+    info!(
+        "[sanctum] received auth challenge for room {}",
+        challenge.room_id
+    );
 
     // Verify server_id matches expected host key
     let expected_server_id = {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(host_noise_pubkey);
         hasher.finalize().to_vec()
@@ -79,23 +107,28 @@ pub async fn connect_and_auth(
     }
 
     // ── Phase 2: Send auth response ──
-    // MVP: send fingerprint + alias, skip real PGP signature
     let response_msg = WireMessage::AuthResponse(pb::AuthResponse {
         fingerprint: fingerprint.as_str().to_string(),
-        signature: vec![],        // MVP: no real PGP sig
-        pgp_public_key: vec![],   // MVP: no real PGP key
+        signature: vec![],
+        pgp_public_key: vec![],
         display_alias: display_alias.to_string(),
     });
     let response_frame = proto_codec::proto_encode(&response_msg)?;
     transport.send_frame(&response_frame).await?;
 
-    info!("[sanctum] sent auth response as {}", fingerprint.short());
+    info!(
+        "[sanctum] sent auth response as {}",
+        fingerprint.short()
+    );
 
     // ── Phase 3: Receive auth result ──
     let result_frame = transport.recv_frame().await?;
     if result_frame.message_type != message_types::AUTH_RESULT {
         return Err(SanctumError::AuthFailed {
-            reason: format!("expected AuthResult, got 0x{:02X}", result_frame.message_type),
+            reason: format!(
+                "expected AuthResult, got 0x{:02X}",
+                result_frame.message_type
+            ),
         });
     }
 
@@ -107,7 +140,11 @@ pub async fn connect_and_auth(
                     reason: r.error_message,
                 });
             }
-            info!("[sanctum] authenticated as {} (role: {})", fingerprint.short(), r.member_role);
+            info!(
+                "[sanctum] authenticated as {} (role: {})",
+                fingerprint.short(),
+                r.member_role
+            );
 
             Ok(ConnectedSession {
                 transport,
@@ -132,8 +169,8 @@ pub async fn send_message(
     let msg = WireMessage::RoomMessage(pb::RoomMessage {
         sender_fingerprint: sender_fp.as_str().to_string(),
         sequence_number: seq,
-        ratchet_header: None, // MVP: no real ratchet
-        ciphertext: content.as_bytes().to_vec(), // MVP: plaintext for testing
+        ratchet_header: None,
+        ciphertext: content.as_bytes().to_vec(),
         nonce: vec![0u8; 12],
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -146,7 +183,6 @@ pub async fn send_message(
 }
 
 /// Receive and decode a message from the host.
-/// Returns None for non-message frames (e.g. PeerReady, Pong).
 pub async fn recv_message(
     transport: &mut TcpTransport,
 ) -> Result<Option<ReceivedMessage>, SanctumError> {
@@ -156,14 +192,12 @@ pub async fn recv_message(
         message_types::ROOM_MESSAGE => {
             let msg = proto_codec::proto_decode(&frame)?;
             match msg {
-                WireMessage::RoomMessage(m) => {
-                    Ok(Some(ReceivedMessage {
-                        sender: m.sender_fingerprint,
-                        content: String::from_utf8_lossy(&m.ciphertext).to_string(),
-                        sequence: m.sequence_number,
-                        timestamp: m.timestamp,
-                    }))
-                }
+                WireMessage::RoomMessage(m) => Ok(Some(ReceivedMessage {
+                    sender: m.sender_fingerprint,
+                    content: String::from_utf8_lossy(&m.ciphertext).to_string(),
+                    sequence: m.sequence_number,
+                    timestamp: m.timestamp,
+                })),
                 _ => Ok(None),
             }
         }
@@ -192,12 +226,8 @@ pub async fn recv_message(
 /// A decoded incoming chat message.
 #[derive(Debug, Clone)]
 pub struct ReceivedMessage {
-    /// Sender fingerprint string.
     pub sender: String,
-    /// Message content (plaintext in MVP).
     pub content: String,
-    /// Sequence number.
     pub sequence: u64,
-    /// Unix timestamp.
     pub timestamp: u64,
 }
