@@ -10,6 +10,8 @@ rust-version.workspace = true
 [dependencies]
 sanctum-app = { path = "../sanctum-app" }
 sanctum-domain = { path = "../sanctum-domain" }
+sanctum-crypto = { path = "../sanctum-crypto" }
+snow = "0.9"
 prost = "0.12"
 
 # Async

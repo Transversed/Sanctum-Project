@@ -39,3 +39,6 @@ pub mod client_connector;
 
 /// Socks for Tor implementation
 pub mod socks;
+
+// Noise implementatipn
+pub mod noise_transport;
