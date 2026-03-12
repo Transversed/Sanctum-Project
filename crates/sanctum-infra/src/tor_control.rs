@@ -40,7 +40,7 @@ pub struct HiddenService {
     pub onion_address: String,
     /// The exposed port.
     pub port: u16,
-    /// The service ID (for DEL_ONION). This is the onion address without ".onion".
+    /// The service ID (for DEL_ONION). Onion address without ".onion".
     pub service_id: String,
 }
 
@@ -78,21 +78,22 @@ impl TorController {
         if self.mock {
             return true;
         }
-        match TcpStream::connect(&self.config.control_addr).await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        TcpStream::connect(&self.config.control_addr).await.is_ok()
     }
 
     /// Connect and authenticate to the Tor control port.
     ///
-    /// Tries cookie auth first, then falls back to no-auth.
+    /// 1. Connects to the control port
+    /// 2. Sends PROTOCOLINFO to discover the cookie file path
+    /// 3. Reads the cookie (must be exactly 32 bytes)
+    /// 4. Authenticates with the cookie
     pub async fn connect(&mut self) -> Result<(), SanctumError> {
         if self.mock {
             info!("[tor] mock mode — skipping connect");
             return Ok(());
         }
 
+        // ── Step 1: Connect to control port ──
         let stream = TcpStream::connect(&self.config.control_addr)
             .await
             .map_err(|e| SanctumError::TorUnavailable(
@@ -101,13 +102,12 @@ impl TorController {
 
         let mut reader = BufReader::new(stream);
 
-        // Step 1: Send PROTOCOLINFO to get the cookie path
+        // ── Step 2: PROTOCOLINFO to discover cookie path ──
         write_cmd(&mut reader, "PROTOCOLINFO 1\r\n").await?;
 
         let mut cookie_path_from_tor: Option<String> = None;
         loop {
             let line = read_response(&mut reader).await?;
-            // Parse: 250-AUTH METHODS=COOKIE,SAFECOOKIE COOKIEFILE="/path/to/cookie"
             if line.contains("COOKIEFILE=") {
                 if let Some(start) = line.find("COOKIEFILE=\"") {
                     let rest = &line[start + 12..];
@@ -117,7 +117,7 @@ impl TorController {
                 }
             }
             if line.starts_with("250 ") {
-                break; // End of PROTOCOLINFO response
+                break;
             }
             if line.starts_with("5") {
                 return Err(SanctumError::TorUnavailable(
@@ -126,47 +126,56 @@ impl TorController {
             }
         }
 
-        // Step 2: Read cookie and authenticate
-        let cookie_paths_to_try: Vec<String> = {
-            let mut paths = Vec::new();
-            if let Some(p) = cookie_path_from_tor {
-                paths.push(p);
-            }
-            paths.push("/var/lib/tor/control_auth_cookie".into());
-            paths.push("/var/run/tor/control.authcookie".into());
-            paths.push("/usr/local/var/lib/tor/control_auth_cookie".into());
-            paths
-        };
+        // ── Step 3: Build list of cookie paths to try ──
+        // Tor-reported path first, then common fallbacks
+        let mut cookie_paths: Vec<String> = Vec::new();
+        if let Some(p) = cookie_path_from_tor {
+            cookie_paths.push(p);
+        }
+        cookie_paths.push("/var/lib/tor/control_auth_cookie".into());
+        cookie_paths.push("/var/run/tor/control.authcookie".into());
+        cookie_paths.push("/usr/local/var/lib/tor/control_auth_cookie".into());
+        // Deduplicate (Tor-reported path may be the same as a fallback)
+        cookie_paths.dedup();
 
+        // ── Step 4: Read cookie and authenticate ──
         let mut authenticated = false;
+        let mut last_error = String::new();
 
-        for cookie_path in &cookie_paths_to_try {
-            eprintln!("[DEBUG] trying cookie: {cookie_path}");
+        for cookie_path in &cookie_paths {
             match tokio::fs::read(cookie_path).await {
                 Ok(cookie) => {
-                    eprintln!("[DEBUG] read {} bytes from {cookie_path}", cookie.len());
                     if cookie.len() != 32 {
-                        eprintln!("[DEBUG] wrong length, skipping");
+                        last_error = format!(
+                            "cookie at {cookie_path} has wrong length: {} (expected 32)",
+                            cookie.len()
+                        );
+                        warn!("[tor] {last_error}");
                         continue;
                     }
                     let hex_cookie = hex_encode(&cookie);
                     let cmd = format!("AUTHENTICATE {hex_cookie}\r\n");
-                    eprintln!("[DEBUG] sending: AUTHENTICATE {}...", &hex_cookie[..16]);
                     write_cmd(&mut reader, &cmd).await?;
                     let response = read_response(&mut reader).await?;
-                    eprintln!("[DEBUG] response: {response}");
                     if response.starts_with("250") {
                         info!("[tor] authenticated via cookie ({cookie_path})");
                         authenticated = true;
                         break;
+                    } else {
+                        last_error = format!(
+                            "cookie auth rejected for {cookie_path}: {response}"
+                        );
+                        warn!("[tor] {last_error}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("[DEBUG] cannot read {cookie_path}: {e}");
+                    last_error = format!("cannot read {cookie_path}: {e}");
+                    // Only log at debug level — permission errors on wrong paths are expected
                 }
             }
         }
 
+        // ── Step 5: Fallback to empty auth ──
         if !authenticated {
             write_cmd(&mut reader, "AUTHENTICATE\r\n").await?;
             let response = read_response(&mut reader).await?;
@@ -176,10 +185,23 @@ impl TorController {
             }
         }
 
+        // ── Step 6: Final error with actionable message ──
         if !authenticated {
-            return Err(SanctumError::TorUnavailable(
-                "could not authenticate to Tor control port".into(),
-            ));
+            return Err(SanctumError::TorUnavailable(format!(
+                "could not authenticate to Tor control port.\n\
+                 Last error: {last_error}\n\
+                 \n\
+                 Checklist:\n\
+                 1. Verify /etc/tor/torrc contains:\n\
+                    ControlPort 9051\n\
+                    CookieAuthentication 1\n\
+                    CookieAuthFileGroupReadable 1\n\
+                 2. Restart Tor: sudo systemctl restart tor\n\
+                 3. Add your user to the tor group: sudo usermod -aG tor $USER\n\
+                 4. Restart your terminal (or run: newgrp tor)\n\
+                 5. Verify cookie is readable: cat /var/lib/tor/control_auth_cookie | wc -c\n\
+                    (should print 32)"
+            )));
         }
 
         self.control_stream = Some(reader);
@@ -187,9 +209,6 @@ impl TorController {
     }
 
     /// Create a new ephemeral v3 hidden service.
-    ///
-    /// Sends ADD_ONION to Tor. The hidden service forwards
-    /// `hidden_service_port` → `127.0.0.1:local_port`.
     pub async fn create_hidden_service(&mut self) -> Result<HiddenService, SanctumError> {
         if self.active_service.is_some() {
             return Err(SanctumError::TorUnavailable(
@@ -210,21 +229,17 @@ impl TorController {
         }
 
         let reader = self.control_stream.as_mut().ok_or_else(|| {
-            SanctumError::TorUnavailable("not connected to control port".into())
+            SanctumError::TorUnavailable("not connected to control port — call connect() first".into())
         })?;
 
-        // ADD_ONION NEW:ED25519-V3 Port=HS_PORT,127.0.0.1:LOCAL_PORT Flags=DiscardPK
         let cmd = format!(
-            "ADD_ONION NEW:ED25519-V3 Port={},{} Flags=DiscardPK\r\n",
+            "ADD_ONION NEW:ED25519-V3 Port={},127.0.0.1:{} Flags=DiscardPK\r\n",
             self.config.hidden_service_port,
-            format!("127.0.0.1:{}", self.config.local_port),
+            self.config.local_port,
         );
 
         write_cmd(reader, &cmd).await?;
 
-        // Response format:
-        // 250-ServiceID=<base32 onion address without .onion>
-        // 250 OK
         let mut service_id = String::new();
         loop {
             let line = read_response(reader).await?;
@@ -252,7 +267,7 @@ impl TorController {
         let hs = HiddenService {
             onion_address: onion_address.clone(),
             port: self.config.hidden_service_port,
-            service_id: service_id.clone(),
+            service_id,
         };
 
         info!("[tor] hidden service created: {onion_address}:{}", self.config.hidden_service_port);
@@ -289,7 +304,7 @@ impl TorController {
         self.active_service.as_ref()
     }
 
-    /// Get the SOCKS5 proxy address for client connections.
+    /// Get the SOCKS5 proxy address.
     pub fn socks_addr(&self) -> &str {
         &self.config.socks_addr
     }
@@ -299,15 +314,13 @@ impl TorController {
         self.mock
     }
 
-    /// Set availability (for testing).
-    pub fn set_available(&mut self, _available: bool) {
-        // Kept for backward compat with existing tests
-    }
-
     /// Check if Tor is available (backward compat).
     pub fn is_available(&self) -> bool {
         self.mock || self.control_stream.is_some()
     }
+
+    /// Set availability (backward compat for tests).
+    pub fn set_available(&mut self, _available: bool) {}
 }
 
 // ============================================================
@@ -346,7 +359,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
-/// Generate a mock v3 onion address for testing.
 fn generate_mock_onion() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 35];
@@ -402,5 +414,11 @@ mod tests {
         assert!(addr.ends_with(".onion"));
         let name = addr.strip_suffix(".onion").unwrap();
         assert_eq!(name.len(), 56);
+    }
+
+    #[test]
+    fn hex_encode_correct() {
+        assert_eq!(hex_encode(&[0x47, 0xDF, 0x36]), "47DF36");
+        assert_eq!(hex_encode(&[0x00, 0xFF]), "00FF");
     }
 }
