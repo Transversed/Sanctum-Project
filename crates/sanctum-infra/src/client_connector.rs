@@ -1,10 +1,13 @@
-//! Client network connector: connect to host, authenticate, send/receive.
+//! Client network connector with Noise NK transport encryption.
 //!
-//! Supports two connection modes:
-//! - Direct TCP (localhost testing): connect_and_auth()
-//! - Via Tor SOCKS5 (.onion): connect_via_tor_and_auth()
+//! Connection flow:
+//! 1. TCP connect (direct or via Tor SOCKS5)
+//! 2. Noise NK handshake (transport encryption established)
+//! 3. PGP challenge-response auth (over encrypted transport)
+//! 4. Session ready for E2E encrypted chat
 
-use crate::codec::{message_types, Frame};
+use crate::codec::message_types;
+use crate::noise_transport::NoiseTransport;
 use crate::proto_codec::{self, pb, WireMessage};
 use crate::socks;
 use crate::tcp_transport::TcpTransport;
@@ -12,12 +15,12 @@ use sanctum_domain::entities::member::Fingerprint;
 use sanctum_domain::errors::SanctumError;
 
 use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::info;
 
-/// Result of a successful connection + auth.
+/// Result of a successful connection + Noise + auth.
 pub struct ConnectedSession {
-    /// The authenticated transport.
-    pub transport: TcpTransport,
+    /// The Noise-encrypted transport.
+    pub transport: NoiseTransport,
     /// Our fingerprint.
     pub fingerprint: Fingerprint,
     /// Our display alias.
@@ -26,7 +29,7 @@ pub struct ConnectedSession {
     pub role: String,
 }
 
-/// Connect directly (localhost testing) and authenticate.
+/// Connect directly (localhost) with Noise + auth.
 pub async fn connect_and_auth(
     addr: &str,
     fingerprint: &Fingerprint,
@@ -36,13 +39,19 @@ pub async fn connect_and_auth(
     let stream = TcpStream::connect(addr)
         .await
         .map_err(|e| SanctumError::ConnectionLost(format!("connect to {addr}: {e}")))?;
+    info!("[sanctum] TCP connected to {addr}");
 
-    info!("[sanctum] connected to {addr}");
-    let transport = TcpTransport::new(stream, 0);
+    let tcp = TcpTransport::new(stream, 0);
+
+    // Noise NK handshake
+    info!("[sanctum] Noise handshake...");
+    let transport = NoiseTransport::client_handshake(tcp, host_noise_pubkey).await?;
+    info!("[sanctum] Noise established");
+
     run_auth(transport, fingerprint, display_alias, host_noise_pubkey).await
 }
 
-/// Connect via Tor SOCKS5 to a .onion address and authenticate.
+/// Connect via Tor SOCKS5 with Noise + auth.
 pub async fn connect_via_tor_and_auth(
     socks_addr: &str,
     onion_address: &str,
@@ -52,100 +61,75 @@ pub async fn connect_via_tor_and_auth(
     host_noise_pubkey: &[u8],
 ) -> Result<ConnectedSession, SanctumError> {
     info!("[sanctum] connecting to {onion_address}:{onion_port} via Tor...");
-
     let stream = socks::connect_via_tor(socks_addr, onion_address, onion_port).await?;
+    info!("[sanctum] Tor connection established");
 
-    info!("[sanctum] Tor connection established to {onion_address}");
-    let transport = TcpTransport::new(stream, 0);
+    let tcp = TcpTransport::new(stream, 0);
+
+    info!("[sanctum] Noise handshake...");
+    let transport = NoiseTransport::client_handshake(tcp, host_noise_pubkey).await?;
+    info!("[sanctum] Noise established");
+
     run_auth(transport, fingerprint, display_alias, host_noise_pubkey).await
 }
 
-/// Run the auth handshake over an already-connected transport.
+/// Run PGP auth over an already Noise-encrypted transport.
 async fn run_auth(
-    mut transport: TcpTransport,
+    mut transport: NoiseTransport,
     fingerprint: &Fingerprint,
     display_alias: &str,
     host_noise_pubkey: &[u8],
 ) -> Result<ConnectedSession, SanctumError> {
-    // ── Phase 1: Receive auth challenge ──
+    // Receive challenge
     let challenge_frame = transport.recv_frame().await?;
     if challenge_frame.message_type != message_types::AUTH_CHALLENGE {
         return Err(SanctumError::AuthFailed {
-            reason: format!(
-                "expected AuthChallenge, got 0x{:02X}",
-                challenge_frame.message_type
-            ),
+            reason: format!("expected AuthChallenge, got 0x{:02X}", challenge_frame.message_type),
         });
     }
 
-    let challenge_msg = proto_codec::proto_decode(&challenge_frame)?;
-    let challenge = match challenge_msg {
+    let challenge = match proto_codec::proto_decode(&challenge_frame)? {
         WireMessage::AuthChallenge(c) => c,
-        _ => {
-            return Err(SanctumError::AuthFailed {
-                reason: "unexpected message in auth".into(),
-            });
-        }
+        _ => return Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
     };
 
-    info!(
-        "[sanctum] received auth challenge for room {}",
-        challenge.room_id
-    );
+    info!("[sanctum] auth challenge for room {}", challenge.room_id);
 
-    // Verify server_id matches expected host key
-    let expected_server_id = {
+    // Verify server_id
+    let expected = {
         use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(host_noise_pubkey);
-        hasher.finalize().to_vec()
+        Sha256::digest(host_noise_pubkey).to_vec()
     };
-    if challenge.server_id != expected_server_id {
+    if challenge.server_id != expected {
         return Err(SanctumError::AuthFailed {
             reason: "server_id mismatch — possible relay attack".into(),
         });
     }
 
-    // ── Phase 2: Send auth response ──
+    // Send response
     let response_msg = WireMessage::AuthResponse(pb::AuthResponse {
         fingerprint: fingerprint.as_str().to_string(),
         signature: vec![],
         pgp_public_key: vec![],
         display_alias: display_alias.to_string(),
     });
-    let response_frame = proto_codec::proto_encode(&response_msg)?;
-    transport.send_frame(&response_frame).await?;
+    transport.send_frame(&proto_codec::proto_encode(&response_msg)?).await?;
+    info!("[sanctum] sent auth as {}", fingerprint.short());
 
-    info!(
-        "[sanctum] sent auth response as {}",
-        fingerprint.short()
-    );
-
-    // ── Phase 3: Receive auth result ──
+    // Receive result
     let result_frame = transport.recv_frame().await?;
     if result_frame.message_type != message_types::AUTH_RESULT {
         return Err(SanctumError::AuthFailed {
-            reason: format!(
-                "expected AuthResult, got 0x{:02X}",
-                result_frame.message_type
-            ),
+            reason: format!("expected AuthResult, got 0x{:02X}", result_frame.message_type),
         });
     }
 
-    let result_msg = proto_codec::proto_decode(&result_frame)?;
-    match result_msg {
+    match proto_codec::proto_decode(&result_frame)? {
         WireMessage::AuthResult(r) => {
             if !r.success {
-                return Err(SanctumError::AuthFailed {
-                    reason: r.error_message,
-                });
+                return Err(SanctumError::AuthFailed { reason: r.error_message });
             }
-            info!(
-                "[sanctum] authenticated as {} (role: {})",
-                fingerprint.short(),
-                r.member_role
-            );
-
+            info!("[sanctum] authenticated (role: {})", r.member_role);
             Ok(ConnectedSession {
                 transport,
                 fingerprint: fingerprint.clone(),
@@ -153,81 +137,6 @@ async fn run_auth(
                 role: r.member_role,
             })
         }
-        _ => Err(SanctumError::AuthFailed {
-            reason: "unexpected message after auth response".into(),
-        }),
+        _ => Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
     }
-}
-
-/// Send a chat message over an authenticated session.
-pub async fn send_message(
-    transport: &mut TcpTransport,
-    sender_fp: &Fingerprint,
-    content: &str,
-    seq: u64,
-) -> Result<(), SanctumError> {
-    let msg = WireMessage::RoomMessage(pb::RoomMessage {
-        sender_fingerprint: sender_fp.as_str().to_string(),
-        sequence_number: seq,
-        ratchet_header: None,
-        ciphertext: content.as_bytes().to_vec(),
-        nonce: vec![0u8; 12],
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    });
-
-    let frame = proto_codec::proto_encode(&msg)?;
-    transport.send_frame(&frame).await
-}
-
-/// Receive and decode a message from the host.
-pub async fn recv_message(
-    transport: &mut TcpTransport,
-) -> Result<Option<ReceivedMessage>, SanctumError> {
-    let frame = transport.recv_frame().await?;
-
-    match frame.message_type {
-        message_types::ROOM_MESSAGE => {
-            let msg = proto_codec::proto_decode(&frame)?;
-            match msg {
-                WireMessage::RoomMessage(m) => Ok(Some(ReceivedMessage {
-                    sender: m.sender_fingerprint,
-                    content: String::from_utf8_lossy(&m.ciphertext).to_string(),
-                    sequence: m.sequence_number,
-                    timestamp: m.timestamp,
-                })),
-                _ => Ok(None),
-            }
-        }
-        message_types::PEER_READY => {
-            let msg = proto_codec::proto_decode(&frame)?;
-            if let WireMessage::PeerReady(p) = msg {
-                info!("[sanctum] peer ready: {}", p.display_alias);
-            }
-            Ok(None)
-        }
-        message_types::PONG => Ok(None),
-        message_types::ERROR => {
-            let msg = proto_codec::proto_decode(&frame)?;
-            if let WireMessage::ProtocolError(e) = msg {
-                warn!("[sanctum] server error: {} — {}", e.code, e.message);
-            }
-            Ok(None)
-        }
-        other => {
-            warn!("[sanctum] unexpected frame type: 0x{other:02X}");
-            Ok(None)
-        }
-    }
-}
-
-/// A decoded incoming chat message.
-#[derive(Debug, Clone)]
-pub struct ReceivedMessage {
-    pub sender: String,
-    pub content: String,
-    pub sequence: u64,
-    pub timestamp: u64,
 }

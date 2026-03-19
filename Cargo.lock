@@ -1150,6 +1150,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "sanctum-app",
+ "sanctum-crypto",
  "sanctum-domain",
  "sanctum-infra",
  "serde",

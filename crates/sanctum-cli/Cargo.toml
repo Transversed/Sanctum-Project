@@ -15,6 +15,7 @@ path = "src/main.rs"
 sanctum-domain = { path = "../sanctum-domain" }
 sanctum-app = { path = "../sanctum-app" }
 sanctum-infra = { path = "../sanctum-infra" }
+sanctum-crypto = { path = "../sanctum-crypto" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

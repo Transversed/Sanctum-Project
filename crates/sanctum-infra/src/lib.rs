@@ -42,3 +42,11 @@ pub mod socks;
 
 // Noise implementatipn
 pub mod noise_transport;
+
+// E2E sessions module
+pub mod e2e_session;
+
+/// Re-export Noise keygen for convenience.
+pub fn noise_keygen() -> (Vec<u8>, Vec<u8>) {
+    sanctum_crypto::noise::generate_keypair().unwrap()
+}
