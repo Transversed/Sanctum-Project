@@ -50,3 +50,6 @@ pub mod e2e_session;
 pub fn noise_keygen() -> (Vec<u8>, Vec<u8>) {
     sanctum_crypto::noise::generate_keypair().unwrap()
 }
+
+/// Invite token codec: base64url encode/decode.
+pub mod invite_codec;

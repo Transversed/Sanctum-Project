@@ -13,6 +13,7 @@ sanctum-domain = { path = "../sanctum-domain" }
 sanctum-crypto = { path = "../sanctum-crypto" }
 snow = "0.9"
 prost = "0.12"
+base64 = "0.22"
 
 # Async
 tokio = { workspace = true, features = ["sync", "io-util", "time", "net"] }
