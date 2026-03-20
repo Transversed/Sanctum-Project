@@ -10,3 +10,4 @@ pub mod send;
 pub mod read;
 pub mod status;
 pub mod export_manifest;
+pub mod chat_loop;

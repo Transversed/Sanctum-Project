@@ -1,13 +1,13 @@
 //! Host network listener with Noise NK transport encryption.
 //!
-//! Each client connection gets its own Noise session.
-//! The host decrypts the Noise layer (transport) to see frame types
-//! for routing, but CANNOT read E2E encrypted payloads inside
-//! RoomMessage.ciphertext — those are opaque blobs relayed blindly.
+//! Each client gets its own Noise session. The host decrypts transport
+//! for routing but is blind to E2E payloads.
 //!
-//! Layers:
-//!   Client A ←[Noise A]→ Host ←[Noise B]→ Client B
-//!   Client A ←─────── [E2E] ──────────→ Client B  (host blind)
+//! When a new client joins:
+//! 1. Noise handshake
+//! 2. Auth challenge-response
+//! 3. Send PeerReady for all existing clients → new client
+//! 4. Broadcast PeerReady for new client → all existing clients
 
 use crate::codec::{self, message_types, Frame};
 use crate::noise_transport::NoiseTransport;
@@ -23,13 +23,15 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
 struct RoutedMessage {
     sender: Fingerprint,
     frame: Frame,
 }
+
+/// Stores fingerprint → display alias for all connected clients.
+type AliasMap = Arc<Mutex<HashMap<String, String>>>;
 
 pub struct HostListener {
     bind_addr: String,
@@ -38,6 +40,7 @@ pub struct HostListener {
     host_noise_pubkey: Vec<u8>,
     host_noise_privkey: Vec<u8>,
     clients: Arc<Mutex<HashMap<u64, mpsc::Sender<Frame>>>>,
+    aliases: AliasMap,
     route_tx: broadcast::Sender<RoutedMessage>,
     shutdown: CancellationToken,
 }
@@ -58,6 +61,7 @@ impl HostListener {
             host_noise_pubkey,
             host_noise_privkey,
             clients: Arc::new(Mutex::new(HashMap::new())),
+            aliases: Arc::new(Mutex::new(HashMap::new())),
             route_tx,
             shutdown,
         }
@@ -68,13 +72,13 @@ impl HostListener {
             .await
             .map_err(|e| SanctumError::ConnectionLost(format!("bind {}: {e}", self.bind_addr)))?;
 
-        info!("[sanctum] listening on {}", self.bind_addr);
+        eprintln!("[sanctum] listening on {}", self.bind_addr);
         let mut conn_counter: u64 = 1;
 
         loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => {
-                    info!("[sanctum] host shutting down");
+                    eprintln!("[sanctum] host shutting down");
                     break;
                 }
                 accept = listener.accept() => {
@@ -82,7 +86,7 @@ impl HostListener {
                         Ok((stream, addr)) => {
                             let conn_id = conn_counter;
                             conn_counter += 1;
-                            info!("[sanctum] connection #{conn_id} from {addr}");
+                            eprintln!("[sanctum] connection #{conn_id} from {addr}");
 
                             let tcp = TcpTransport::new(stream, conn_id);
                             let host_svc = self.host_service.clone();
@@ -90,19 +94,21 @@ impl HostListener {
                             let noise_pub = self.host_noise_pubkey.clone();
                             let noise_priv = self.host_noise_privkey.clone();
                             let clients = self.clients.clone();
+                            let aliases = self.aliases.clone();
                             let route_tx = self.route_tx.clone();
                             let shutdown = self.shutdown.clone();
 
                             tokio::spawn(async move {
                                 if let Err(e) = handle_client(
                                     tcp, conn_id, host_svc, auth_svc,
-                                    noise_pub, noise_priv, clients, route_tx, shutdown,
+                                    noise_pub, noise_priv, clients, aliases,
+                                    route_tx, shutdown,
                                 ).await {
-                                    warn!("[sanctum] client #{conn_id} error: {e}");
+                                    eprintln!("[sanctum] client #{conn_id} error: {e}");
                                 }
                             });
                         }
-                        Err(e) => error!("[sanctum] accept error: {e}"),
+                        Err(e) => eprintln!("[sanctum] accept error: {e}"),
                     }
                 }
             }
@@ -119,45 +125,62 @@ async fn handle_client(
     host_noise_pubkey: Vec<u8>,
     host_noise_privkey: Vec<u8>,
     clients: Arc<Mutex<HashMap<u64, mpsc::Sender<Frame>>>>,
+    aliases: AliasMap,
     route_tx: broadcast::Sender<RoutedMessage>,
     shutdown: CancellationToken,
 ) -> Result<(), SanctumError> {
     // ── Phase 1: Noise NK Handshake ──
-    info!("[sanctum] client #{conn_id}: Noise handshake...");
     let mut transport = NoiseTransport::host_handshake(tcp, &host_noise_privkey).await?;
-    info!("[sanctum] client #{conn_id}: Noise established");
 
-    // ── Phase 2: PGP Auth (over encrypted transport) ──
-    let fingerprint = authenticate_client(
-        &mut transport, &host_svc, &auth_svc, &host_noise_pubkey,
+    // ── Phase 2: Auth ──
+    let (fingerprint, display_alias) = authenticate_client(
+        &mut transport, &host_svc, &auth_svc, &host_noise_pubkey, conn_id,
     ).await?;
-    info!("[sanctum] client #{conn_id} authenticated as {}", fingerprint.short());
+    eprintln!("[sanctum] client #{conn_id} authenticated: {} ({})", display_alias, fingerprint.short());
 
+    // Register client
     {
         let mut svc = host_svc.lock().await;
         svc.register_client(fingerprint.clone(), conn_id)?;
         svc.mark_client_ready(&fingerprint);
     }
 
+    // Store alias
+    {
+        aliases.lock().await.insert(fingerprint.as_str().to_string(), display_alias.clone());
+    }
+
+    // Create outbound channel
     let (out_tx, mut out_rx) = mpsc::channel::<Frame>(256);
     { clients.lock().await.insert(conn_id, out_tx); }
 
     let mut route_rx = route_tx.subscribe();
 
-    // Notify peers
+    // ── Phase 3: Send PeerReady for ALL existing clients to the NEW client ──
+    {
+        let alias_map = aliases.lock().await;
+        for (fp_str, alias) in alias_map.iter() {
+            if fp_str != fingerprint.as_str() {
+                let peer_frame = proto_codec::proto_encode(&WireMessage::PeerReady(pb::PeerReady {
+                    fingerprint: fp_str.clone(),
+                    display_alias: alias.clone(),
+                })).unwrap();
+                let _ = transport.send_frame(&peer_frame).await;
+            }
+        }
+    }
+
+    // ── Phase 4: Broadcast PeerReady for NEW client to all EXISTING clients ──
     let join_frame = proto_codec::proto_encode(&WireMessage::PeerReady(pb::PeerReady {
         fingerprint: fingerprint.as_str().to_string(),
-        display_alias: fingerprint.short().to_string(),
+        display_alias: display_alias.clone(),
     })).unwrap();
     let _ = route_tx.send(RoutedMessage {
         sender: fingerprint.clone(),
         frame: join_frame,
     });
 
-    info!("[sanctum] client #{conn_id} entering message loop");
-
-    // ── Phase 3: Message loop ──
-    // The host sees frame types (for routing) but E2E payloads are opaque.
+    // ── Phase 5: Message loop ──
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -167,7 +190,6 @@ async fn handle_client(
                     Ok(frame) => {
                         match frame.message_type {
                             message_types::ROOM_MESSAGE => {
-                                // Route opaque E2E payload to recipients
                                 let svc = host_svc.lock().await;
                                 let recipients = svc.route_recipients(&fingerprint);
                                 drop(svc);
@@ -186,13 +208,11 @@ async fn handle_client(
                                 let pong = codec::pong_frame();
                                 transport.send_frame(&pong).await?;
                             }
-                            _ => {
-                                warn!("[sanctum] unhandled 0x{:02X} from #{conn_id}", frame.message_type);
-                            }
+                            _ => {}
                         }
                     }
                     Err(e) => {
-                        info!("[sanctum] client #{conn_id} disconnected: {e}");
+                        eprintln!("[sanctum] {} ({}) disconnected: {e}", display_alias, fingerprint.short());
                         break;
                     }
                 }
@@ -200,7 +220,7 @@ async fn handle_client(
 
             Some(frame) = out_rx.recv() => {
                 if let Err(e) = transport.send_frame(&frame).await {
-                    warn!("[sanctum] send to #{conn_id} failed: {e}");
+                    eprintln!("[sanctum] send to {} failed: {e}", display_alias);
                     break;
                 }
             }
@@ -208,7 +228,7 @@ async fn handle_client(
             Ok(routed) = route_rx.recv() => {
                 if routed.sender != fingerprint {
                     if let Err(e) = transport.send_frame(&routed.frame).await {
-                        warn!("[sanctum] broadcast to #{conn_id} failed: {e}");
+                        eprintln!("[sanctum] broadcast to {} failed: {e}", display_alias);
                         break;
                     }
                 }
@@ -216,10 +236,15 @@ async fn handle_client(
         }
     }
 
+    // Cleanup
     { host_svc.lock().await.remove_client(&fingerprint); }
     { clients.lock().await.remove(&conn_id); }
+    { aliases.lock().await.remove(fingerprint.as_str()); }
     transport.shutdown().await;
-    info!("[sanctum] client #{conn_id} disconnected cleanly");
+
+    // Notify peers that this client left
+    // (In production: broadcast a PeerLeft event)
+    eprintln!("[sanctum] {} ({}) left the room", display_alias, fingerprint.short());
     Ok(())
 }
 
@@ -228,7 +253,8 @@ async fn authenticate_client(
     host_svc: &Arc<Mutex<HostService>>,
     auth_svc: &Arc<Mutex<AuthService>>,
     host_noise_pubkey: &[u8],
-) -> Result<Fingerprint, SanctumError> {
+    conn_id: u64,
+) -> Result<(Fingerprint, String), SanctumError> {
     let room_id = {
         let svc = host_svc.lock().await;
         svc.room().id().clone()
@@ -245,8 +271,7 @@ async fn authenticate_client(
         room_id: challenge.room_id.as_str().to_string(),
         server_id: challenge.server_id.to_vec(),
     });
-    let frame = proto_codec::proto_encode(&challenge_msg)?;
-    transport.send_frame(&frame).await?;
+    transport.send_frame(&proto_codec::proto_encode(&challenge_msg)?).await?;
 
     let resp_frame = transport.recv_frame().await?;
     if resp_frame.message_type != message_types::AUTH_RESPONSE {
@@ -264,6 +289,25 @@ async fn authenticate_client(
         _ => return Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
     };
 
+    // Add member dynamically if not already present
+    {
+        let mut svc = host_svc.lock().await;
+        if svc.room().find_member(&fingerprint).is_none() {
+            let member = sanctum_domain::entities::member::Member::new(
+                fingerprint.clone(),
+                vec![0u8; 32],
+                sanctum_domain::entities::member::DisplayAlias::new(&display_alias)
+                    .unwrap_or_else(|_| sanctum_domain::entities::member::DisplayAlias::new("anon").unwrap()),
+                sanctum_domain::entities::member::Role::Member,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            );
+            let _ = svc.room_mut().add_member(member);
+        }
+    }
+
     let authorized_fps = {
         let svc = host_svc.lock().await;
         svc.room().members().iter()
@@ -279,7 +323,7 @@ async fn authenticate_client(
         display_alias: display_alias.clone(),
     };
 
-    { auth_svc.lock().await.verify_response(&challenge, &auth_response, &authorized_fps)?; }
+    auth_svc.lock().await.verify_response(&challenge, &auth_response, &authorized_fps)?;
 
     let result_msg = WireMessage::AuthResult(pb::AuthResult {
         success: true,
@@ -289,5 +333,5 @@ async fn authenticate_client(
     });
     transport.send_frame(&proto_codec::proto_encode(&result_msg)?).await?;
 
-    Ok(fingerprint)
+    Ok((fingerprint, display_alias))
 }
