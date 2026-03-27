@@ -1,23 +1,23 @@
-//! `sanctum host` — host a room with real networking.
+//! `sanctum host` — host a room with real networking + real identity.
 
 use crate::commands::chat_loop;
 use crate::config::Config;
 use clap::Subcommand;
 use sanctum_app::host_service::HostService;
 use sanctum_app::room_service::RoomService;
-use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
+use sanctum_domain::entities::member::{DisplayAlias, Role};
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_domain::events::SanctumEvent;
 use sanctum_infra::client_connector;
 use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::host_listener::HostListener;
+use sanctum_infra::identity_pgp::IdentityAdapter;
 use sanctum_infra::tor_control::{TorConfig as InfraTorConfig, TorController};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Subcommand)]
 pub enum HostAction {
-    /// Create and host a new room.
     Create {
         name: String,
         #[arg(long, default_value = "ephemeral")]
@@ -40,19 +40,11 @@ pub enum HostAction {
 }
 
 pub async fn run(
-    action: HostAction,
-    config: &Config,
-    shutdown: CancellationToken,
+    action: HostAction, config: &Config, shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        HostAction::Create {
-            name, mode, port, max_members,
-            backlog_max, backlog_hours, chat, local,
-        } => {
-            run_create(
-                &name, &mode, port, max_members, backlog_max,
-                backlog_hours, chat, local, config, shutdown,
-            ).await
+        HostAction::Create { name, mode, port, max_members, backlog_max, backlog_hours, chat, local } => {
+            run_create(&name, &mode, port, max_members, backlog_max, backlog_hours, chat, local, config, shutdown).await
         }
         HostAction::Status => { println!("[sanctum] not implemented"); Ok(()) }
         HostAction::Stop => { println!("[sanctum] stopping..."); Ok(()) }
@@ -64,6 +56,14 @@ async fn run_create(
     backlog_max: u32, backlog_hours: u32, open_chat: bool, local: bool,
     config: &Config, shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Load real identity
+    let identity = IdentityAdapter::load_from_disk().map_err(|e| {
+        format!("{e}\nRun `sanctum init --alias <name>` first.")
+    })?;
+    let owner_fp = identity.fingerprint().clone();
+    let alias = config.identity.alias.clone();
+    println!("[sanctum] identity: {} ({})", alias, owner_fp.short());
+
     let room_mode = match mode { "persistent" => RoomMode::Persistent, _ => RoomMode::Ephemeral };
     let listen_port = port.unwrap_or(config.host.listen_port);
 
@@ -82,11 +82,11 @@ async fn run_create(
 
     // Room
     let mut room_svc = RoomService::new();
-    let owner_fp = Fingerprint::new("A".repeat(40)).unwrap();
-    let alias = config.identity.alias.clone();
     let owner_alias = DisplayAlias::new(&alias).unwrap_or_else(|_| DisplayAlias::new("host").unwrap());
-
-    room_svc.create_room(name, room_mode, room_config, owner_fp.clone(), vec![0u8; 32], owner_alias)?;
+    room_svc.create_room(
+        name, room_mode, room_config,
+        owner_fp.clone(), identity.public_key_bytes(), owner_alias,
+    )?;
     let room = room_svc.room()?.clone();
     println!("[sanctum] room '{}' created ({})", room.name(), room_mode);
 
@@ -124,11 +124,14 @@ async fn run_create(
         if let Err(e) = listener.run().await { eprintln!("[sanctum] relay: {e}"); }
     });
 
+    let onion_display = if local { "127.0.0.1".to_string() } else { hs.onion_address.clone() };
     println!();
-    println!("[sanctum] to invite:");
-    println!("  sanctum room invite <fingerprint> --room-onion {} --room-port {} --room-id {}",
-        if local { "127.0.0.1".to_string() } else { hs.onion_address.clone() },
-        hs.port, room.id().as_str());
+    println!("[sanctum] your fingerprint (share with invitees):");
+    println!("  {}", owner_fp.as_str());
+    println!();
+    println!("[sanctum] to invite someone:");
+    println!("  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {}",
+        onion_display, hs.port, room.id().as_str());
     println!();
 
     if open_chat {

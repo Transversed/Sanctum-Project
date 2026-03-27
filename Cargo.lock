@@ -1209,6 +1209,8 @@ dependencies = [
  "base64",
  "bytes",
  "crossterm",
+ "dirs",
+ "ed25519-dalek",
  "prost",
  "prost-build",
  "rand",

@@ -14,6 +14,8 @@ sanctum-crypto = { path = "../sanctum-crypto" }
 snow = "0.9"
 prost = "0.12"
 base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+dirs = "5"
 
 # Async
 tokio = { workspace = true, features = ["sync", "io-util", "time", "net"] }

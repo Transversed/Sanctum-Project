@@ -1,9 +1,10 @@
-//! `sanctum join` — join a room via invite token.
+//! `sanctum join` — join a room via invite token, using real identity.
 
 use crate::commands::chat_loop;
 use crate::config::Config;
 use sanctum_infra::client_connector;
 use sanctum_infra::e2e_session::PeerPrivateKeys;
+use sanctum_infra::identity_pgp::IdentityAdapter;
 use sanctum_infra::invite_codec;
 use sanctum_infra::tor_control::TorConfig;
 use tokio_util::sync::CancellationToken;
@@ -14,7 +15,15 @@ pub async fn run(
     config: &Config,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Decode
+    // Load our real identity
+    let identity = IdentityAdapter::load_from_disk().map_err(|e| {
+        format!("{e}\nRun `sanctum init --alias <n>` first.")
+    })?;
+    let local_fp = identity.fingerprint().clone();
+    let alias = config.identity.alias.clone();
+    println!("[sanctum] identity: {} ({})", alias, local_fp.short());
+
+    // Decode token
     println!("[sanctum] parsing invite token...");
     let invite = invite_codec::decode_invite(token)?;
 
@@ -22,10 +31,9 @@ pub async fn run(
     println!("[sanctum] host: {}:{}", invite.onion_address, invite.port);
     println!("[sanctum] role: {:?}", invite.role);
 
-    // Validate
-    let local_fp = invite.invited_fingerprint.clone();
+    // Validate: is this token for us?
     invite_codec::validate_invite(&invite, &local_fp)?;
-    println!("[sanctum] token valid");
+    println!("[sanctum] token valid (for our fingerprint)");
 
     // E2E keys
     let e2e_keys = PeerPrivateKeys::generate(5);
@@ -33,8 +41,6 @@ pub async fn run(
     // Connect
     let is_local = invite.onion_address == "localhost"
         || invite.onion_address.starts_with("127.");
-
-    let alias = config.identity.alias.clone();
 
     let session = if !is_local && invite.onion_address.ends_with(".onion") {
         println!("[sanctum] connecting via Tor (may take 10-30s)...");

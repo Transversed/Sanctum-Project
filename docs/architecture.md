@@ -416,18 +416,18 @@ HandshakeInit {
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Infrastructure                             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
-│  │TorControl│ │SqliteStore│ │SequoiaPGP│ │ProtobufCodec    │   │
-│  └─────┬─────┘ └────┬─────┘ └────┬─────┘ └───────┬─────────┘   │
+│  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌─────────────────┐    │
+│  │TorControl│ │SqliteStore│ │SequoiaPGP│ │ProtobufCodec    │    │
+│  └─────┬────┘ └─────┬─────┘ └────┬─────┘ └────────┬────────┘    │
 │════════╪════════════╪════════════╪════════════════╪═════════════│
 │        │    Application (Use Cases / Services)    │             │
 │  ┌─────▼────────────▼────────────▼────────────────▼──────────┐  │
 │  │  HostService │ ClientService │ RoomService │ AuthService  │  │
-│  └─────┬────────┴───────┬───────┴──────┬──────┴──────┬──────┘  │
+│  └─────┬────────┴───────┬───────┴──────┬──────┴──────┬───────┘  │
 │════════╪════════════════╪══════════════╪═════════════╪══════════│
-│        │         Domain (Entities & Ports)          │          │
+│        │         Domain (Entities & Ports)           │          │
 │  ┌─────▼────────────────▼──────────────▼─────────────▼───────┐  │
-│  │  Room │ Member │ Message │ Identity │ Session │ Invite   │  │
+│  │  Room │ Member │ Message │ Identity │ Session │ Invite    │  │
 │  │                                                           │  │
 │  │  Ports (Traits) :                                         │  │
 │  │  TransportPort, StoragePort, CryptoPort,                  │  │
@@ -551,11 +551,11 @@ sanctum chat <room_id>
       │
       ▼
 ┌─────────────────┐
-│  Connect & Auth  │  ClientService + AuthService
+│  Connect & Auth │  ClientService + AuthService
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  Fetch Backlog   │  Si persistant : RoomService::fetch_backlog()
+│  Fetch Backlog  │  Si persistant : RoomService::fetch_backlog()
 └────────┬────────┘
          ▼
 ┌──────────────────────────────────────────────┐
@@ -579,7 +579,7 @@ sanctum chat <room_id>
     Ctrl-C / /exit / erreur fatale
          ▼
 ┌─────────────────┐
-│ Shutdown         │  zeroize, restaurer terminal, disconnect
+│ Shutdown        │  zeroize, restaurer terminal, disconnect
 └─────────────────┘
 ```
 
