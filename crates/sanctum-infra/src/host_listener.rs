@@ -108,7 +108,7 @@ impl HostListener {
                                 }
                             });
                         }
-                        Err(e) => eprintln!("[sanctum] accept error: {e}"),
+                        Err(e) => { let _ = e; }
                     }
                 }
             }

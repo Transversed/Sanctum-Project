@@ -1,22 +1,4 @@
-//! Interactive chat loop with crossterm raw mode, status bar, and colored output.
-//!
-//! Layout:
-//!   ┌─────────────────────────────────────────────────┐
-//!   │ SANCTUM │ #room │ ephemeral │ N peers │ Tor: ✓  │  ← Status bar
-//!   ├─────────────────────────────────────────────────┤
-//!   │ [HH:MM] alice: message content                  │  ← Messages
-//!   │ ── bob joined the room ──                       │
-//!   ├─────────────────────────────────────────────────┤
-//!   │ > user input here_                              │  ← Input line
-//!   └─────────────────────────────────────────────────┘
-//!
-//! Colors:
-//!   - Timestamps: dim/gray
-//!   - Other senders: cyan + bold
-//!   - Own messages: green + bold
-//!   - System events: yellow
-//!   - Status bar: white on dark gray
-//!   - Prompt: bold white
+//! Interactive chat loop — crossterm raw mode, status bar, colored messages, bottom prompt.
 
 use sanctum_domain::entities::member::Fingerprint;
 use sanctum_infra::codec::message_types;
@@ -32,132 +14,94 @@ use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
 use tokio_util::sync::CancellationToken;
 
-/// Status bar info.
-struct StatusBar {
-    room_name: String,
-    room_mode: String,
-    peer_count: u32,
-    tor_connected: bool,
-    e2e_active: bool,
+pub struct ChatConfig {
+    pub room_name: String,
+    pub room_mode: String,
+    pub tor_connected: bool,
 }
 
-impl StatusBar {
-    fn render(&self, out: &mut Stdout) {
-        let tor = if self.tor_connected { "✓" } else { "✗" };
-        let e2e = if self.e2e_active { "E2E: ✓" } else { "E2E: ─" };
-        let bar = format!(
-            " SANCTUM │ #{} │ {} │ {} peers │ Tor: {} │ {} ",
-            self.room_name, self.room_mode, self.peer_count, tor, e2e,
-        );
-        // Pad to terminal width
-        let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
-        let padded = format!("{:<width$}", bar, width = width);
-
-        let _ = queue!(
-            out,
-            cursor::SavePosition,
-            cursor::MoveTo(0, 0),
-            SetBackgroundColor(Color::DarkGrey),
-            SetForegroundColor(Color::White),
-            SetAttribute(Attribute::Bold),
-        );
-        let _ = write!(out, "{padded}");
-        let _ = queue!(
-            out,
-            ResetColor,
-            cursor::RestorePosition,
-        );
-        let _ = out.flush();
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self { room_name: "room".into(), room_mode: "ephemeral".into(), tor_connected: false }
     }
 }
 
-/// Run the interactive chat loop.
 pub async fn run(
+    transport: NoiseTransport,
+    local_fp: Fingerprint,
+    local_alias: String,
+    e2e_keys: Option<PeerPrivateKeys>,
+    is_host: bool,
+    shutdown: CancellationToken,
+) {
+    run_with_config(transport, local_fp, local_alias, e2e_keys, is_host, shutdown, ChatConfig::default()).await;
+}
+
+pub async fn run_with_config(
     mut transport: NoiseTransport,
     local_fp: Fingerprint,
     local_alias: String,
     e2e_keys: Option<PeerPrivateKeys>,
     _is_host: bool,
     shutdown: CancellationToken,
+    cfg: ChatConfig,
 ) {
     let mut e2e_session: Option<E2eSession> = None;
-    let mut e2e_initiated = false;
     let fp_str = local_fp.as_str().to_string();
     let mut seq: u64 = 1;
+    let mut peer_count: u32 = 1;
+    let mut input_buf = String::new();
 
     let mut aliases: HashMap<String, String> = HashMap::new();
     aliases.insert(fp_str.clone(), local_alias.clone());
 
-    let mut status = StatusBar {
-        room_name: "room".into(),
-        room_mode: "ephemeral".into(),
-        peer_count: 1,
-        tor_connected: false,
-        e2e_active: false,
-    };
+    let raw_ok = terminal::enable_raw_mode().is_ok();
+    let mut out = io::stdout();
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
 
-    // Enable raw mode
-    let raw_enabled = terminal::enable_raw_mode().is_ok();
-    let mut stdout = io::stdout();
-
-    if raw_enabled {
-        // Clear screen, move to row 1 (row 0 = status bar)
-        let _ = execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 1));
-        status.render(&mut stdout);
-        print_prompt(&mut stdout, "");
+    if raw_ok {
+        let _ = execute!(out, terminal::Clear(ClearType::All), cursor::Hide);
+        // Scroll region: line 1 (below status bar) to line rows-2 (above prompt)
+        let _ = write!(out, "\x1b[2;{}r", rows - 1);
+        let _ = out.flush();
+        draw_status(&mut out, &cfg.room_name, &cfg.room_mode, peer_count, cfg.tor_connected, false, cols);
+        draw_prompt(&mut out, "", rows);
     }
 
-    // Input buffer
-    let mut input_buf = String::new();
-
-    // Keyboard events via channel
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::channel::<KeyAction>(64);
-    let raw_flag = raw_enabled;
+    // Keyboard channel
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::channel::<KeyEvent>(64);
+    let use_raw = raw_ok;
     tokio::task::spawn_blocking(move || {
-        loop {
-            if !raw_flag {
-                // Fallback: line-based input
+        if !use_raw {
+            loop {
                 let mut line = String::new();
                 match io::stdin().read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        let text = line.trim().to_string();
-                        if text == "/exit" || text == "/quit" || text == "/q" {
-                            let _ = key_tx.blocking_send(KeyAction::Quit);
+                        let t = line.trim().to_string();
+                        if t == "/exit" || t == "/quit" || t == "/q" {
+                            let _ = key_tx.blocking_send(KeyEvent::Quit);
                             break;
                         }
-                        if !text.is_empty() {
-                            let _ = key_tx.blocking_send(KeyAction::Submit(text));
-                        }
+                        if !t.is_empty() { let _ = key_tx.blocking_send(KeyEvent::Line(t)); }
                     }
                     Err(_) => break,
                 }
-                continue;
             }
-
+            return;
+        }
+        loop {
             match event::read() {
-                Ok(Event::Key(key_event)) => {
-                    match key_event.code {
-                        KeyCode::Enter => {
-                            let _ = key_tx.blocking_send(KeyAction::Enter);
-                        }
-                        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                            let _ = key_tx.blocking_send(KeyAction::Quit);
-                            break;
-                        }
-                        KeyCode::Char(c) => {
-                            let _ = key_tx.blocking_send(KeyAction::Char(c));
-                        }
-                        KeyCode::Backspace => {
-                            let _ = key_tx.blocking_send(KeyAction::Backspace);
-                        }
-                        KeyCode::Esc => {
-                            let _ = key_tx.blocking_send(KeyAction::Quit);
-                            break;
-                        }
-                        _ => {}
+                Ok(Event::Key(k)) => match k.code {
+                    KeyCode::Enter => { let _ = key_tx.blocking_send(KeyEvent::Enter); }
+                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let _ = key_tx.blocking_send(KeyEvent::Quit); break;
                     }
-                }
+                    KeyCode::Esc => { let _ = key_tx.blocking_send(KeyEvent::Quit); break; }
+                    KeyCode::Char(c) => { let _ = key_tx.blocking_send(KeyEvent::Char(c)); }
+                    KeyCode::Backspace => { let _ = key_tx.blocking_send(KeyEvent::Backspace); }
+                    _ => {}
+                },
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -168,7 +112,6 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => break,
 
-            // Network
             result = transport.recv_frame() => {
                 match result {
                     Ok(frame) => {
@@ -176,45 +119,27 @@ pub async fn run(
                             message_types::ROOM_MESSAGE => {
                                 if let Ok(WireMessage::RoomMessage(m)) = proto_codec::proto_decode(&frame) {
                                     let is_own = m.sender_fingerprint == fp_str;
-                                    if let Some(content) = handle_incoming(&m, &mut e2e_session, &e2e_keys) {
+                                    if let Some(content) = try_decrypt(&m, &mut e2e_session, &e2e_keys) {
                                         let ts = m.timestamp % 86400;
                                         let h = ts / 3600;
                                         let min = (ts % 3600) / 60;
-                                        let sender = resolve_alias(&m.sender_fingerprint, &aliases);
-
-                                        if raw_enabled {
-                                            clear_prompt(&mut stdout);
-                                        }
-
-                                        if is_own {
-                                            print_own_message(&mut stdout, h, min, sender, &content, raw_enabled);
-                                        } else {
-                                            print_peer_message(&mut stdout, h, min, sender, &content, raw_enabled);
-                                        }
-
-                                        if raw_enabled {
-                                            print_prompt(&mut stdout, &input_buf);
-                                        }
+                                        let sender = alias_for(&m.sender_fingerprint, &aliases);
+                                        if raw_ok { goto_msg(&mut out, rows); }
+                                        write_msg(&mut out, h, min, &sender, &content, is_own);
+                                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
                                     }
                                 }
                             }
                             message_types::PEER_READY => {
                                 if let Ok(WireMessage::PeerReady(p)) = proto_codec::proto_decode(&frame) {
-                                    let alias = if p.display_alias.is_empty() {
-                                        short_fp(&p.fingerprint).to_string()
-                                    } else {
-                                        p.display_alias.clone()
-                                    };
-                                    aliases.insert(p.fingerprint.clone(), alias.clone());
-                                    status.peer_count += 1;
-
-                                    if raw_enabled {
-                                        clear_prompt(&mut stdout);
-                                        print_system(&mut stdout, &format!("── {alias} a rejoint la room ──"), raw_enabled);
-                                        status.render(&mut stdout);
-                                        print_prompt(&mut stdout, &input_buf);
-                                    } else {
-                                        print_system(&mut stdout, &format!("── {alias} a rejoint la room ──"), raw_enabled);
+                                    let a = if p.display_alias.is_empty() { short(&p.fingerprint).to_string() } else { p.display_alias.clone() };
+                                    aliases.insert(p.fingerprint.clone(), a.clone());
+                                    peer_count += 1;
+                                    if raw_ok { goto_msg(&mut out, rows); }
+                                    write_sys(&mut out, &format!("── {} a rejoint la room ──", a));
+                                    if raw_ok {
+                                        draw_status(&mut out, &cfg.room_name, &cfg.room_mode, peer_count, cfg.tor_connected, e2e_session.is_some(), cols);
+                                        draw_prompt(&mut out, &input_buf, rows);
                                     }
                                 }
                             }
@@ -222,213 +147,151 @@ pub async fn run(
                         }
                     }
                     Err(e) => {
-                        if raw_enabled { clear_prompt(&mut stdout); }
-                        print_system(&mut stdout, &format!("connexion perdue: {e}"), raw_enabled);
+                        if raw_ok { goto_msg(&mut out, rows); }
+                        write_sys(&mut out, &format!("connexion perdue: {e}"));
                         break;
                     }
                 }
             }
 
-            // Keyboard
-            action = key_rx.recv() => {
-                match action {
-                    Some(KeyAction::Char(c)) => {
+            ev = key_rx.recv() => {
+                match ev {
+                    Some(KeyEvent::Char(c)) => {
                         input_buf.push(c);
-                        if raw_enabled {
-                            print_prompt(&mut stdout, &input_buf);
-                        }
+                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
                     }
-                    Some(KeyAction::Backspace) => {
+                    Some(KeyEvent::Backspace) => {
                         input_buf.pop();
-                        if raw_enabled {
-                            print_prompt(&mut stdout, &input_buf);
-                        }
+                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
                     }
-                    Some(KeyAction::Enter) | Some(KeyAction::Submit(_)) => {
-                        let text = if let Some(KeyAction::Submit(t)) = action.as_ref().filter(|a| matches!(a, KeyAction::Submit(_))) {
-                            t.clone()
-                        } else {
-                            let t = input_buf.trim().to_string();
-                            input_buf.clear();
-                            t
+                    Some(KeyEvent::Enter) | Some(KeyEvent::Line(_)) => {
+                        let text = match &ev {
+                            Some(KeyEvent::Line(t)) => t.clone(),
+                            _ => { let t = input_buf.trim().to_string(); input_buf.clear(); t }
                         };
+                        if text.is_empty() { if raw_ok { draw_prompt(&mut out, &input_buf, rows); } continue; }
+                        if text == "/exit" || text == "/quit" || text == "/q" { break; }
 
-                        if text.is_empty() {
-                            if raw_enabled { print_prompt(&mut stdout, &input_buf); }
-                            continue;
-                        }
-                        if text == "/exit" || text == "/quit" || text == "/q" {
-                            break;
-                        }
-
-                        // E2E init
-                        if e2e_session.is_none() && !e2e_initiated {
-                            // Will be established on receiving InitialMessage
-                        }
-
-                        let (ciphertext, ratchet_header) = if let Some(ref mut s) = e2e_session {
-                            match s.encrypt(text.as_bytes()) {
-                                Ok((header, ct)) => (ct, Some(pb::RatchetHeader {
-                                    dh_public: header.dh_public.to_vec(),
-                                    previous_chain_length: header.prev_chain_len,
-                                    message_number: header.msg_num,
-                                })),
-                                Err(e) => {
-                                    print_system(&mut stdout, &format!("encrypt error: {e}"), raw_enabled);
-                                    (text.as_bytes().to_vec(), None)
-                                }
-                            }
-                        } else {
-                            (text.as_bytes().to_vec(), None)
-                        };
-
-                        let frame = proto_codec::proto_encode(
-                            &WireMessage::RoomMessage(pb::RoomMessage {
-                                sender_fingerprint: fp_str.clone(),
-                                sequence_number: seq,
-                                ratchet_header,
-                                ciphertext,
-                                nonce: vec![0u8; 12],
-                                timestamp: now_ts(),
-                            })
-                        ).unwrap();
+                        let (ct, rh) = encrypt_msg(&text, &mut e2e_session);
+                        let frame = proto_codec::proto_encode(&WireMessage::RoomMessage(pb::RoomMessage {
+                            sender_fingerprint: fp_str.clone(),
+                            sequence_number: seq,
+                            ratchet_header: rh,
+                            ciphertext: ct,
+                            nonce: vec![0u8; 12],
+                            timestamp: now_ts(),
+                        })).unwrap();
 
                         if let Err(e) = transport.send_frame(&frame).await {
-                            print_system(&mut stdout, &format!("send error: {e}"), raw_enabled);
+                            write_sys(&mut out, &format!("send: {e}"));
                             break;
                         }
                         seq += 1;
-
-                        if raw_enabled {
-                            print_prompt(&mut stdout, &input_buf);
-                        }
+                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
                     }
-                    Some(KeyAction::Quit) | None => break,
+                    Some(KeyEvent::Quit) | None => break,
                 }
             }
         }
     }
 
     // Cleanup
-    if raw_enabled {
+    if raw_ok {
+        let _ = write!(out, "\x1b[r"); // reset scroll region
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(stdout, cursor::Show);
+        let _ = execute!(out, cursor::Show, cursor::MoveTo(0, rows.saturating_sub(1)));
     }
-    print_system(&mut stdout, "session terminée. Secrets purgés.", false);
-    let _ = writeln!(stdout);
+    let _ = write!(out, "\n{}session terminée. Secrets purgés.{}\n", SetForegroundColor(Color::DarkYellow), ResetColor);
+    let _ = out.flush();
     transport.shutdown().await;
 }
 
-// ============================================================
-// Key actions
-// ============================================================
+// ── Key events ──
 
-enum KeyAction {
+enum KeyEvent {
     Char(char),
     Backspace,
     Enter,
-    Submit(String), // For non-raw mode
+    Line(String),
     Quit,
 }
 
-// ============================================================
-// Rendering helpers
-// ============================================================
+// ── Drawing ──
 
-fn print_peer_message(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, _raw: bool) {
+fn draw_status(out: &mut Stdout, room: &str, mode: &str, peers: u32, tor: bool, e2e: bool, cols: u16) {
+    let tor_s = if tor { "✓" } else { "✗" };
+    let e2e_s = if e2e { "✓" } else { "─" };
+    let bar = format!(" SANCTUM │ #{room} │ {mode} │ {peers} peers │ Tor: {tor_s} │ E2E: {e2e_s} ");
+    let w = cols as usize;
+    let padded = format!("{:<w$}", bar);
+    let _ = queue!(out, cursor::SavePosition, cursor::MoveTo(0, 0));
+    let _ = write!(out, "{}{}{}{}{}", SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White), SetAttribute(Attribute::Bold), padded, ResetColor);
+    let _ = queue!(out, cursor::RestorePosition);
+    let _ = out.flush();
+}
+
+fn draw_prompt(out: &mut Stdout, input: &str, rows: u16) {
+    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(1)), terminal::Clear(ClearType::CurrentLine));
+    let _ = write!(out, "{}{}> {}{}", SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold), ResetColor, input);
+    let _ = queue!(out, cursor::Show);
+    let _ = out.flush();
+}
+
+fn goto_msg(out: &mut Stdout, rows: u16) {
+    // Position at bottom of scroll region, write newline to scroll up
+    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(2)));
+    let _ = write!(out, "\r\n");
+    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(2)));
+}
+
+fn write_msg(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, is_own: bool) {
+    let color = if is_own { Color::Green } else { Color::Cyan };
     let _ = write!(
-        out,
-        "{dim}[{h:02}:{min:02}]{reset} {cyan}{bold}{sender}{reset}: {content}\r\n",
-        dim = SetAttribute(Attribute::Dim),
-        reset = ResetColor,
-        cyan = SetForegroundColor(Color::Cyan),
-        bold = SetAttribute(Attribute::Bold),
+        out, "{}[{:02}:{:02}]{} {}{}{}{}: {}{}",
+        SetAttribute(Attribute::Dim), h, min, ResetColor,
+        SetForegroundColor(color), SetAttribute(Attribute::Bold), sender, ResetColor,
+        content, ResetColor,
     );
     let _ = out.flush();
 }
 
-fn print_own_message(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, _raw: bool) {
-    let _ = write!(
-        out,
-        "{dim}[{h:02}:{min:02}]{reset} {green}{bold}{sender}{reset}: {content}\r\n",
-        dim = SetAttribute(Attribute::Dim),
-        reset = ResetColor,
-        green = SetForegroundColor(Color::Green),
-        bold = SetAttribute(Attribute::Bold),
-    );
+fn write_sys(out: &mut Stdout, text: &str) {
+    let _ = write!(out, "{}{}{}", SetForegroundColor(Color::DarkYellow), text, ResetColor);
     let _ = out.flush();
 }
 
-fn print_system(out: &mut Stdout, text: &str, raw: bool) {
-    let nl = if raw { "\r\n" } else { "\n" };
-    let _ = write!(
-        out,
-        "{yellow}{text}{reset}{nl}",
-        yellow = SetForegroundColor(Color::DarkYellow),
-        reset = ResetColor,
-    );
-    let _ = out.flush();
+// ── Crypto helpers ──
+
+fn encrypt_msg(text: &str, e2e: &mut Option<E2eSession>) -> (Vec<u8>, Option<pb::RatchetHeader>) {
+    if let Some(ref mut s) = e2e {
+        match s.encrypt(text.as_bytes()) {
+            Ok((h, ct)) => (ct, Some(pb::RatchetHeader {
+                dh_public: h.dh_public.to_vec(),
+                previous_chain_length: h.prev_chain_len,
+                message_number: h.msg_num,
+            })),
+            Err(_) => (text.as_bytes().to_vec(), None),
+        }
+    } else {
+        (text.as_bytes().to_vec(), None)
+    }
 }
 
-fn print_prompt(out: &mut Stdout, input: &str) {
-    // Move to beginning of current line, clear it, print prompt
-    let _ = queue!(
-        out,
-        cursor::MoveToColumn(0),
-        terminal::Clear(ClearType::CurrentLine),
-        SetForegroundColor(Color::White),
-        SetAttribute(Attribute::Bold),
-    );
-    let _ = write!(out, "> {}", input);
-    let _ = queue!(out, ResetColor);
-    let _ = out.flush();
-}
-
-fn clear_prompt(out: &mut Stdout) {
-    let _ = queue!(
-        out,
-        cursor::MoveToColumn(0),
-        terminal::Clear(ClearType::CurrentLine),
-    );
-    let _ = out.flush();
-}
-
-// ============================================================
-// E2E + alias helpers
-// ============================================================
-
-fn handle_incoming(
-    m: &pb::RoomMessage,
-    e2e_session: &mut Option<E2eSession>,
-    e2e_keys: &Option<PeerPrivateKeys>,
-) -> Option<String> {
-    if let Some(ref mut session) = e2e_session {
+fn try_decrypt(m: &pb::RoomMessage, e2e: &mut Option<E2eSession>, keys: &Option<PeerPrivateKeys>) -> Option<String> {
+    if let Some(ref mut s) = e2e {
         if let Some(ref rh) = m.ratchet_header {
             if rh.dh_public.len() == 32 {
-                let mut dh_pub = [0u8; 32];
-                dh_pub.copy_from_slice(&rh.dh_public);
-                let header = sanctum_crypto::ratchet::Header {
-                    dh_public: dh_pub,
-                    prev_chain_len: rh.previous_chain_length,
-                    msg_num: rh.message_number,
-                };
-                return match session.decrypt(&header, &m.ciphertext) {
-                    Ok(pt) => Some(String::from_utf8_lossy(&pt).to_string()),
-                    Err(_) => None,
-                };
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&rh.dh_public);
+                let hdr = sanctum_crypto::ratchet::Header { dh_public: pk, prev_chain_len: rh.previous_chain_length, msg_num: rh.message_number };
+                return match s.decrypt(&hdr, &m.ciphertext) { Ok(pt) => Some(String::from_utf8_lossy(&pt).to_string()), Err(_) => None };
             }
         }
         None
     } else {
-        if let Ok(init_msg) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
-            if let Some(ref keys) = e2e_keys {
-                match E2eSession::respond(keys, &init_msg) {
-                    Ok(session) => {
-                        *e2e_session = Some(session);
-                        // Caller will see e2e_active change
-                    }
-                    Err(_) => {}
-                }
+        if let Ok(init) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
+            if let Some(ref k) = keys {
+                if let Ok(session) = E2eSession::respond(k, &init) { *e2e = Some(session); }
             }
             None
         } else {
@@ -437,17 +300,14 @@ fn handle_incoming(
     }
 }
 
-fn resolve_alias<'a>(fp: &'a str, aliases: &'a HashMap<String, String>) -> &'a str {
-    aliases.get(fp).map(|s| s.as_str()).unwrap_or_else(|| short_fp(fp))
+fn alias_for<'a>(fp: &'a str, map: &'a HashMap<String, String>) -> String {
+    map.get(fp).cloned().unwrap_or_else(|| short(fp).to_string())
 }
 
-fn short_fp(fp: &str) -> &str {
+fn short(fp: &str) -> &str {
     if fp.len() >= 8 { &fp[..8] } else { fp }
 }
 
 fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
