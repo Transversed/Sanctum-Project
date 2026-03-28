@@ -49,7 +49,7 @@ impl MessageService {
     pub fn prepare_envelope(
         &mut self,
         sender: &Fingerprint,
-        recipient: &Fingerprint,
+        _recipient: &Fingerprint,
         room_id: &RoomId,
         ciphertext: Vec<u8>,
         ratchet_header: RatchetHeader,

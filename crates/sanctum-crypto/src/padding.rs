@@ -22,7 +22,7 @@ pub fn pad(plaintext: &[u8], block_size: usize) -> Vec<u8> {
 
     let real_len = plaintext.len() as u32;
     let needed = 4 + plaintext.len(); // 4 bytes header + message
-    let padded_len = ((needed + block_size - 1) / block_size) * block_size;
+    let padded_len = needed.div_ceil(block_size) * block_size;
 
     let mut output = Vec::with_capacity(padded_len);
 

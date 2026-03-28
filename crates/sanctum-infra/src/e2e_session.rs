@@ -14,7 +14,7 @@ use sanctum_crypto::ratchet::{Header, RatchetState};
 use sanctum_crypto::x3dh::{self, X25519Keypair};
 use sanctum_domain::errors::SanctumError;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+
 
 /// The initial message sent from Alice to Bob to establish E2E.
 /// Bob needs this (plus his own keys) to derive the same shared secret.
@@ -101,7 +101,7 @@ impl E2eSession {
             &alice_keys.identity,
             &bob_public.identity_pub,
             &bob_public.signed_prekey_pub,
-            opk.map(|k| k),
+            opk,
         )?;
 
         // Initialize Double Ratchet (Alice side)

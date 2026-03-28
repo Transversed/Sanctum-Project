@@ -7,7 +7,7 @@ use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
 use sanctum_domain::entities::room::RoomMode;
 use sanctum_domain::events::ChatEvent;
 use sanctum_app::chat_session::{ChatSession, SessionConfig};
-use sanctum_app::input_parser;
+
 use sanctum_infra::terminal_renderer::TerminalLineRenderer;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -27,7 +27,7 @@ pub async fn run(
         .unwrap_or_else(|_| DisplayAlias::new("anon").unwrap());
 
     let session_config = SessionConfig {
-        room_id: sanctum_domain::entities::room::RoomId::from_str(room_id)
+        room_id: room_id.parse::<sanctum_domain::entities::room::RoomId>()
             .unwrap_or_else(|_| sanctum_domain::entities::room::RoomId::new()),
         room_name: format!("room-{}", &room_id[..8.min(room_id.len())]),
         room_mode: RoomMode::Ephemeral,
@@ -48,7 +48,7 @@ pub async fn run(
     println!("[sanctum] backlog: last {} messages", backlog);
 
     // Main input loop
-    let ui_ref = &session;
+    let _ui_ref = &session;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {

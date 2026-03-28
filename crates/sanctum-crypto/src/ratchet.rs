@@ -195,7 +195,7 @@ impl RatchetState {
         }
 
         // Check if we need a DH ratchet step (new ratchet key from sender)
-        let need_ratchet = self.dh_remote.map_or(true, |r| r != header.dh_public);
+        let need_ratchet = self.dh_remote != Some(header.dh_public);
 
         if need_ratchet {
             self.skip_messages(header.prev_chain_len)?;

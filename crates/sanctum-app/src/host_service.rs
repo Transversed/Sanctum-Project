@@ -4,8 +4,7 @@
 //! messages — it only sees opaque ciphertexts and routes them.
 
 use sanctum_domain::entities::member::Fingerprint;
-use sanctum_domain::entities::message::MessageEnvelope;
-use sanctum_domain::entities::room::{Room, RoomId, RoomMode};
+use sanctum_domain::entities::room::{Room, RoomId};
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::events::SanctumEvent;
 

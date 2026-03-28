@@ -70,7 +70,7 @@ fn run_invite(
 
     let member_role = match role { "admin" => Role::Admin, _ => Role::Member };
 
-    let rid = RoomId::from_str(room_id)
+    let rid = room_id.parse::<RoomId>()
         .map_err(|e| format!("invalid room ID: {e}"))?;
 
     // Read host Noise public key
@@ -101,7 +101,7 @@ fn run_invite(
     let encoded = invite_codec::encode_invite(&token)?;
 
     println!("[sanctum] invite generated");
-    println!("[sanctum] from: {} ({})", inviter_fp.short(), "you");
+    println!("[sanctum] from: {} (you)", inviter_fp.short());
     println!("[sanctum] to: {}", invited_fp.short());
     println!("[sanctum] role: {role}");
     println!("[sanctum] expires in: {ttl_hours}h");

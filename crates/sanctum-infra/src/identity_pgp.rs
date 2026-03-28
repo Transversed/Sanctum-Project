@@ -185,7 +185,7 @@ mod tests {
         let sig = alice.sign(data).unwrap();
         assert_eq!(sig.len(), 64); // Ed25519 signature
 
-        let valid = Self::verify_with_pubkey(&alice.public_key_bytes(), data, &sig).unwrap();
+        let valid = IdentityAdapter::verify_with_pubkey(&alice.public_key_bytes(), data, &sig).unwrap();
         assert!(valid);
     }
 

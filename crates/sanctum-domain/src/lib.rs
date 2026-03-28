@@ -1,7 +1,7 @@
 //! Sanctum Domain — entities, ports, errors, events.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 #![deny(dead_code)]
 #![deny(clippy::all)]
 

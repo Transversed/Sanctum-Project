@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
 
 use super::member::{Fingerprint, Member, MemberStatus, Role};
@@ -17,14 +18,16 @@ impl RoomId {
         Self(Uuid::new_v4())
     }
 
-    /// Parse from UUID string.
-    pub fn from_str(s: &str) -> Result<Self, uuid::Error> {
-        Ok(Self(Uuid::parse_str(s)?))
-    }
-
     /// Full UUID string.
     pub fn as_str(&self) -> String {
         self.0.to_string()
+    }
+}
+
+impl FromStr for RoomId {
+    type Err = uuid::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
     }
 }
 

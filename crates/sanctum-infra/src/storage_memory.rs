@@ -244,7 +244,7 @@ mod tests {
         store.store_message(&recipient, &env).unwrap();
 
         // Purge with 0 max_age → everything older than now
-        let purged = store.purge_expired(0).unwrap();
+        let _purged = store.purge_expired(0).unwrap();
         // Message was just stored, might or might not be purged depending on timing
         // Use a very large max_age to keep everything
         let mut store2 = MemoryStorageAdapter::new(500);

@@ -5,7 +5,7 @@
 
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
 use sanctum_domain::entities::room::RoomId;
-use sanctum_domain::errors::SanctumError;
+
 
 /// Client connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

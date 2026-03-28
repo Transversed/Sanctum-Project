@@ -5,7 +5,7 @@ use crate::config::Config;
 use clap::Subcommand;
 use sanctum_app::host_service::HostService;
 use sanctum_app::room_service::RoomService;
-use sanctum_domain::entities::member::{DisplayAlias, Role};
+use sanctum_domain::entities::member::DisplayAlias;
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_domain::events::SanctumEvent;
 use sanctum_infra::client_connector;
@@ -51,6 +51,7 @@ pub async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_create(
     name: &str, mode: &str, port: Option<u16>, max_members: u16,
     backlog_max: u32, backlog_hours: u32, open_chat: bool, local: bool,
@@ -67,10 +68,12 @@ async fn run_create(
     let room_mode = match mode { "persistent" => RoomMode::Persistent, _ => RoomMode::Ephemeral };
     let listen_port = port.unwrap_or(config.host.listen_port);
 
-    let mut room_config = RoomConfig::default();
-    room_config.max_members = max_members;
-    room_config.backlog_max_messages = backlog_max;
-    room_config.backlog_max_age_hours = backlog_hours;
+    let mut room_config = RoomConfig {
+        max_members,
+        backlog_max_messages: backlog_max,
+        backlog_max_age_hours: backlog_hours,
+        ..RoomConfig::default()
+    };
     room_config.validate();
 
     // Noise keypair

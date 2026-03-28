@@ -3,7 +3,7 @@
 //! Precedence: CLI flags > env vars (SANCTUM_*) > config.toml > defaults.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +176,7 @@ impl Default for UiConfig {
     fn default() -> Self { Self { banner: true, color: true } }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -217,6 +218,7 @@ impl Config {
     }
 
     /// Resolve data directory (expand ~).
+    #[allow(dead_code)]
     pub fn data_dir(&self) -> PathBuf {
         let dir = self.storage.data_dir.replace('~', &dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))

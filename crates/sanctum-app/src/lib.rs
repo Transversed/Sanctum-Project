@@ -5,7 +5,7 @@
 //! host/client services, and interactive chat sessions.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 #![deny(clippy::all)]
 
 /// PGP challenge-response authentication.

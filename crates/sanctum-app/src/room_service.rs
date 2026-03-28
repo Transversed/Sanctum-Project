@@ -105,6 +105,7 @@ impl RoomService {
     }
 
     /// Generate an invite token.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_invite(
         &self,
         inviter_fingerprint: &Fingerprint,

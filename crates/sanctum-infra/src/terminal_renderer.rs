@@ -25,6 +25,7 @@ impl TerminalLineRenderer {
     }
 
     /// Write colored text to stdout.
+    #[allow(dead_code)]
     fn write_colored(&self, color: Color, text: &str) {
         if let Ok(mut out) = self.stdout.lock() {
             let _ = write!(out, "{}{}{}", SetForegroundColor(color), text, ResetColor);
@@ -48,6 +49,7 @@ impl Default for TerminalLineRenderer {
 }
 
 impl UiPort for TerminalLineRenderer {
+    #[allow(clippy::manual_async_fn)]
     fn read_input(&self) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
         async {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -65,9 +67,9 @@ impl UiPort for TerminalLineRenderer {
     fn print_message(&self, _role: &str, sender: &str, content: &str, timestamp: u64) {
         let time = Self::format_time(timestamp);
         if let Ok(mut out) = self.stdout.lock() {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{dim}[{time}]{reset} {cyan}{bold}{sender}{reset}: {content}\n",
+                "{dim}[{time}]{reset} {cyan}{bold}{sender}{reset}: {content}",
                 dim = SetAttribute(Attribute::Dim),
                 reset = ResetColor,
                 cyan = SetForegroundColor(Color::Cyan),
@@ -80,9 +82,9 @@ impl UiPort for TerminalLineRenderer {
     fn print_own_message(&self, _role: &str, alias: &str, content: &str, timestamp: u64) {
         let time = Self::format_time(timestamp);
         if let Ok(mut out) = self.stdout.lock() {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{dim}[{time}]{reset} {green}{bold}{alias}{reset}: {content}\n",
+                "{dim}[{time}]{reset} {green}{bold}{alias}{reset}: {content}",
                 dim = SetAttribute(Attribute::Dim),
                 reset = ResetColor,
                 green = SetForegroundColor(Color::Green),
@@ -94,9 +96,9 @@ impl UiPort for TerminalLineRenderer {
 
     fn print_system(&self, text: &str) {
         if let Ok(mut out) = self.stdout.lock() {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{yellow}{text}{reset}\n",
+                "{yellow}{text}{reset}",
                 yellow = SetForegroundColor(Color::DarkYellow),
                 reset = ResetColor,
             );
@@ -115,9 +117,9 @@ impl UiPort for TerminalLineRenderer {
     fn update_status(&self, status: &StatusInfo) {
         if let Ok(mut out) = self.stdout.lock() {
             let tor_indicator = if status.tor_connected { "🧅" } else { "⚠" };
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{dim}[{room} | {mode} | {role} | {peers} peers | {tor}]{reset}\n",
+                "{dim}[{room} | {mode} | {role} | {peers} peers | {tor}]{reset}",
                 dim = SetAttribute(Attribute::Dim),
                 room = status.room_name,
                 mode = status.room_mode,
@@ -148,9 +150,9 @@ impl UiPort for TerminalLineRenderer {
     fn cleanup(&self) -> Result<(), SanctumError> {
         if let Ok(mut out) = self.stdout.lock() {
             let _ = writeln!(out);
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "{dim}Session ended. Secrets cleared.{reset}\n",
+                "{dim}Session ended. Secrets cleared.{reset}",
                 dim = SetAttribute(Attribute::Dim),
                 reset = ResetColor,
             );
@@ -164,6 +166,7 @@ impl UiPort for TerminalLineRenderer {
 pub struct NullUiAdapter;
 
 impl UiPort for NullUiAdapter {
+    #[allow(clippy::manual_async_fn)]
     fn read_input(&self) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
         async { Err(SanctumError::ConnectionLost("non-interactive mode".into())) }
     }

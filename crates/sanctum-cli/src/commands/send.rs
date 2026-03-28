@@ -6,7 +6,7 @@ use crate::config::Config;
 pub async fn run(
     room_id: &str,
     message: &str,
-    config: &Config,
+    _config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // TODO: connect to room, send message, disconnect
     println!(

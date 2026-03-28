@@ -4,7 +4,7 @@
 //! and provides the concrete cryptographic operations.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 #![deny(clippy::all)]
 
 /// AES-256-GCM and ChaCha20-Poly1305 AEAD operations.

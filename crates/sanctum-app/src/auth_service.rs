@@ -128,11 +128,7 @@ impl AuthService {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let diff = if now > challenge.timestamp {
-            now - challenge.timestamp
-        } else {
-            challenge.timestamp - now
-        };
+        let diff = now.abs_diff(challenge.timestamp);
         if diff > TIMESTAMP_TOLERANCE_SECS {
             return Err(SanctumError::AuthFailed {
                 reason: format!("timestamp out of range: {diff}s drift"),

@@ -288,15 +288,13 @@ fn try_decrypt(m: &pb::RoomMessage, e2e: &mut Option<E2eSession>, keys: &Option<
             }
         }
         None
-    } else {
-        if let Ok(init) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
-            if let Some(ref k) = keys {
-                if let Ok(session) = E2eSession::respond(k, &init) { *e2e = Some(session); }
-            }
-            None
-        } else {
-            Some(String::from_utf8_lossy(&m.ciphertext).to_string())
+    } else if let Ok(init) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
+        if let Some(ref k) = keys {
+            if let Ok(session) = E2eSession::respond(k, &init) { *e2e = Some(session); }
         }
+        None
+    } else {
+        Some(String::from_utf8_lossy(&m.ciphertext).to_string())
     }
 }
 

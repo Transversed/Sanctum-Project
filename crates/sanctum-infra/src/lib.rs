@@ -5,7 +5,7 @@
 //! transport (framing), Tor control, and terminal renderer.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 #![deny(clippy::all)]
 
 /// Wire framing codec: length-prefixed messages.

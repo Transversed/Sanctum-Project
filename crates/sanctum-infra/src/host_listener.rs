@@ -117,6 +117,7 @@ impl HostListener {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client(
     tcp: TcpTransport,
     conn_id: u64,
@@ -253,7 +254,7 @@ async fn authenticate_client(
     host_svc: &Arc<Mutex<HostService>>,
     auth_svc: &Arc<Mutex<AuthService>>,
     host_noise_pubkey: &[u8],
-    conn_id: u64,
+    _conn_id: u64,
 ) -> Result<(Fingerprint, String), SanctumError> {
     let room_id = {
         let svc = host_svc.lock().await;
