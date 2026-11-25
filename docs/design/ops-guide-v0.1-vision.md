@@ -1,3 +1,10 @@
+> [!NOTE]
+> **Document de conception initial (février 2026), conservé pour l'historique.**
+> Il décrit la vision d'origine, pas le code actuel : protocole v1, identité « PGP »,
+> mode persistant, `mlock`, ADR en fichiers séparés… Pour l'état réel, voir
+> [`docs/architecture.md`](../architecture.md), [`docs/protocol.md`](../protocol.md),
+> [`docs/threat-model.md`](../threat-model.md) et [`ROADMAP.md`](../../ROADMAP.md).
+
 # Sanctum Ops — Documentation Complète
 
 ## Table des matières

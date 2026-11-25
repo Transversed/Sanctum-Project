@@ -1,162 +1,118 @@
-# Sanctum — Threat Model
+# Sanctum — Threat Model (v0.1.1)
 
-## Overview
+This document states what Sanctum v0.1.1 protects, against whom, and — just as
+important — what it does **not** protect. Every "Mitigation" below is implemented
+and covered by tests unless marked *(not implemented)*.
 
-Sanctum is a Tor-only, end-to-end encrypted chat tool. This document describes the threat model: who the adversaries are, what they can do, and how Sanctum mitigates their capabilities.
+## 1. Assets
 
-**Core security property**: The host relays ciphertext and cannot read message content. In ephemeral mode, a seized machine yields nothing.
+- Message content and timestamps
+- Long-term identities (Ed25519 keys) and session keys (X3DH, Double Ratchet)
+- Membership of a room (who talks with whom)
+- The network location of members and of the host
 
----
+## 2. Adversaries
 
-## 1. Adversaries
+| Adversary | Capabilities |
+|-----------|--------------|
+| **Network observer** | Watches or tampers with traffic between members and the host (including a malicious Tor relay). |
+| **Malicious or compromised host** | Runs the relay: sees every frame after the Noise layer, can drop, delay, reorder, inject or forge frames, can hand out wrong keys, can lie about who is present. |
+| **Outsider** | Knows the `.onion` address, tries to join or to disturb the room. |
+| **Malicious member** | Holds a valid invitation, speaks the protocol with chosen payloads. |
+| **Local attacker** | Reads the disk of a member (stolen laptop, backup), or runs code as another local user. |
 
-| Adversary | Capabilities | Motivation |
-|-----------|-------------|------------|
-| **Network observer (ISP/State)** | Traffic analysis, timing correlation, DPI | Identify participants, map communications |
-| **Host compromise** | Root access to VPS running a persistent host | Read messages, identify members, tamper with routing |
-| **Malicious member** | Legitimate access to a room | Exfiltrate content, impersonate others, disrupt |
-| **Active attacker (MITM)** | Intercept/modify Tor traffic (theoretical) | Inject messages, replay, downgrade protocol |
-| **Physical attacker** | Physical access to a participant's machine | Extract keys from disk/RAM, read storage |
+## 3. What is protected
 
----
+### T1 — Host reads or forges messages
+**Mitigations.** Messages are end-to-end encrypted with a pairwise Double Ratchet
+session per pair of members; the host only relays per-recipient envelopes and holds
+no key that decrypts them (`host_is_blind` test on the real binary). Prekey bundles
+are signed by each member's Ed25519 identity and bound to its fingerprint, so the
+host cannot substitute keys silently. The ratchet authenticates its header and both
+identity keys (AD), so forged or modified messages are rejected and never
+desynchronize a session. The host stamps the sender of every routed frame from the
+authenticated connection, so members cannot impersonate each other either.
 
-## 2. Attack Surfaces
+**Residual.** A host that controls admission could invite a fake identity of its
+own: members detect it by comparing safety numbers out of band (`/verify`).
 
-| ID | Surface | Component | Risk |
-|----|---------|-----------|------|
-| S1 | Tor transport | Client ↔ Host link | Traffic correlation, timing attacks |
-| S2 | Authentication protocol | PGP challenge-response | Replay, impersonation if key compromised |
-| S3 | E2E encryption | Double Ratchet pairwise | Session key compromise |
-| S4 | Persistent storage | Encrypted SQLite | Physical access, cold boot attacks |
-| S5 | Memory (RAM) | Keys in memory | Memory dump, swap leak |
-| S6 | Metadata | Timestamps, message sizes | Pattern analysis |
-| S7 | Supply chain | Rust crates | Backdoor, unpatched vulnerability |
-| S8 | Tor Control Port | Tor management interface | Unauthorized HS creation/destruction |
+### T2 — Outsider joins the room
+**Mitigations.** Authentication proves possession of an Ed25519 key with a
+signature bound to the Noise handshake hash (replays on another connection fail);
+the host derives the fingerprint itself. Newcomers need an owner-signed,
+single-use, expiring invitation bound to the room, to the host session and to the
+invitee's fingerprint. No unconditional admission exists.
 
----
+### T3 — Disturbing the host (denial of service)
+**Mitigations.** Handshake + authentication within 30 s, idle members dropped
+after 120 s, at most 64 simultaneous connections, a global budget of 30 failed
+authentications per minute, bounded frames (64 KiB), three invalid frames close a
+connection, bounded skipped keys, no `unwrap`/`expect` in library code, parsers
+fuzzed nightly. **Residual:** an onion service can always be flooded at the Tor
+level; a member can exhaust another member's one-time prekeys (X3DH then runs
+without OPK, which remains secure).
 
-## 3. Threat Scenarios and Mitigations
+### T4 — Malicious member attacks other members' terminals
+**Mitigations.** Everything received from the network (content, aliases, errors)
+is stripped of C0/C1 controls, ESC and BiDi overrides before display; aliases are
+restricted to `[A-Za-z0-9_-]{1,20}` by the host. Tested end to end on the binary.
 
-### T1 — Host VPS Compromised
+### T5 — Disk seized (member or host)
+**Mitigations.** Ephemeral mode writes nothing during a session (enforced in CI
+with `strace`). The identity key is encrypted at rest (Argon2id 64 MiB +
+ChaCha20-Poly1305) and private files are created with mode 0600 from the start.
+**Residual:** a weak passphrase can be brute-forced offline; the public key and
+fingerprint are stored in clear.
 
-**Impact**: Critical. Attacker has root access to the host machine.
+### T6 — Tor control port impersonation
+**Mitigations.** SAFECOOKIE authentication: the control port must prove it knows
+the cookie before Sanctum sends its own proof; unauthenticated control ports are
+refused. Sanctum never needs to run as root.
 
-**What the attacker gets**:
-- List of room members (PGP fingerprints, aliases, X25519 public keys)
-- Ciphertext blobs in the backlog (persistent mode)
-- Tor hidden service private key (can impersonate the .onion address)
+### T7 — Protocol downgrade
+**Mitigations.** The protocol version is bound by the Noise prologue
+(`SANCTUM-NOISE-NK-v2`); there is no plaintext mode and no negotiable cipher suite.
 
-**What the attacker does NOT get**:
-- Plaintext messages (E2E encrypted, host never has decryption keys)
-- Private PGP keys of members
-- X25519 private keys of members
-- Double Ratchet session state
+## 4. What is NOT protected (residual risks)
 
-**Mitigations**:
-- E2E encryption (ADR-003): host is blind to content
-- Backlog contains only opaque ciphertexts
-- In ephemeral mode: no storage, no HS key on disk — nothing to seize
+- **Metadata visible to the host.** The host knows the room's members (fingerprints
+  and aliases), when each member is connected, and when and to whom each message is
+  sent, with its size rounded to 256 bytes. The host is the room's directory.
+  Cover traffic and private information retrieval are not implemented.
+- **Fan-out cost.** Each message is encrypted and sent once per member (O(n)); rooms
+  are limited to 50 members. Sender Keys (v0.2) and MLS (v1.0) are planned.
+- **Identity binding.** Trust in another member's identity is
+  trust-on-first-introduction by the owner's invitation; only `/verify` compared out
+  of band defends against a malicious host-owner pair.
+- **Memory.** Secrets are wiped on drop (`zeroize`), but pages are not locked
+  (`mlock` is *not implemented*) and may reach swap; disable swap and core dumps on
+  sensitive machines. A compromised member device reveals that member's messages.
+- **Clock.** Displayed times come from the sender's clock.
+- **Persistent mode** is not implemented in v0.1.1 (refused by the CLI).
+- **No external audit yet.**
 
-### T2 — PGP Key Stolen
+## 5. Explicit assumptions
 
-**Impact**: High. Attacker can impersonate the victim.
+- Tor provides the expected network anonymity.
+- Members protect their identity passphrase and their devices.
+- The operating system and the Rust toolchain are not compromised; dependencies are
+  checked by `cargo-deny` (advisories, licenses, sources) in CI.
 
-**Mitigations**:
-- PGP is used for authentication only, not message encryption (ADR-004)
-- Forward secrecy via Double Ratchet: past messages remain secure
-- Revocation: owner can kick the compromised fingerprint immediately
-- Recommended: use a dedicated PGP signing subkey for Sanctum (revocable independently)
+## 6. Out of scope
 
-### T3 — Message Replay
+CPU side channels, compromise of the Tor network itself, social engineering,
+coercion, and attacks requiring physical access to an unlocked running session.
 
-**Impact**: Medium. Attacker re-sends a captured ciphertext.
+## 7. Properties summary
 
-**Mitigations**:
-- Monotonic sequence counter per sender per room (ADR-006)
-- 64-bit sliding bitmap window for out-of-order tolerance
-- Unique AEAD nonces derived from counter + salt
-- Timestamp tolerance (±120s) for backlog expiration, NOT for anti-replay
-
-### T4 — Traffic Analysis / Correlation
-
-**Impact**: High. Attacker correlates timing patterns to identify participants.
-
-**Mitigations**:
-- Tor as sole transport (ADR-001): no clearnet metadata
-- Message padding to 256-byte blocks (ADR-010): uniform message sizes
-- No user-identifiable data in transport headers
-- Limitation: Tor itself is vulnerable to global passive adversaries (out of scope)
-
-### T5 — Disk Read After Seizure
-
-**Impact**: Critical. Attacker has physical access to the machine.
-
-**Mitigations**:
-- Ephemeral mode: zero disk writes, verified via `strace` (ADR-007)
-- Persistent mode: AES-256-GCM encryption with Argon2id key derivation (m=256MiB, t=4, p=2)
-- Per-field encryption with unique nonces
-- Master key never stored on disk (derived from passphrase at runtime)
-
-### T6 — Swap / Core Dump Leak
-
-**Impact**: High. Secrets leaking to disk via OS mechanisms.
-
-**Mitigations**:
-- `mlock()` on all key material (ADR-008)
-- `zeroize` on drop for all secret types
-- Core dumps disabled (`ulimit -c 0`)
-- Recommended: disable swap entirely in ephemeral mode (`swapoff -a`)
-
-### T7 — Malicious Room Member
-
-**Impact**: Medium. Member can copy/screenshot messages they receive.
-
-**Mitigations**:
-- Out of scope for cryptographic protection (inherent to any messaging system)
-- Operational mitigation: owner can revoke immediately via `/kick`
-- All members rotate SPK and purge sessions with revoked member
-- Ephemeral mode: no history to exfiltrate retroactively
-
-### T8 — Protocol Downgrade
-
-**Impact**: Critical. Attacker forces use of weaker protocol version.
-
-**Mitigations**:
-- Protocol version in every `HandshakeInit`
-- Strict version check: reject if version < minimum supported
-- No fallback modes, no optional encryption, no weak cipher suites
-- `server_id` = SHA-256(host Noise public key) prevents challenge relaying
-
----
-
-## 4. Explicit Assumptions
-
-- Tor provides the expected network anonymity
-- The user protects their PGP private key with a strong passphrase
-- The operating system is not compromised at deployment time
-- Rust crates are authentic (mitigated by `cargo-deny` + `cargo-audit` in CI)
-- The `crossterm` crate does not create temporary files (verified by AT-07)
-
-## 5. Out of Scope
-
-- CPU side-channel attacks (Spectre, Meltdown, etc.)
-- Compromise of the Tor network itself (guard discovery, Sybil attacks)
-- Pure social engineering
-- Rubber-hose cryptanalysis
-- Attacks requiring both physical access AND an active unlocked session
-
----
-
-## 6. Security Properties Summary
-
-| Property | Guarantee | Mechanism |
-|----------|-----------|-----------|
-| **Confidentiality** | Host cannot read messages | E2E Double Ratchet |
-| **Forward secrecy** | Past messages safe if current keys leak | Ratchet key derivation per message |
-| **Post-compromise security** | Sessions self-heal after compromise | Double Ratchet advancement |
-| **Authentication** | Only allowlisted PGP fingerprints can join | PGP challenge-response |
-| **Integrity** | Messages cannot be tampered with | AEAD (AES-256-GCM / ChaChaPoly) |
-| **Anti-replay** | Duplicate messages rejected | Monotonic counter + bitmap window |
-| **Anonymity** | Network identity hidden | Tor Hidden Services v3 |
-| **Ephemerality** | No trace on disk | Zero-write mode, verified by strace |
-| **Memory safety** | Secrets wiped after use | `mlock()` + `zeroize` |
+| Property | Mechanism | Verified by |
+|----------|-----------|-------------|
+| Confidentiality against the host | Pairwise X3DH + Double Ratchet, per-recipient envelopes | `host_is_blind` (real binary), `e2e_room_test` |
+| Key authenticity | Ed25519-signed bundles bound to fingerprints, safety numbers | `room_crypto` unit tests |
+| Forward secrecy / post-compromise security | Double Ratchet (Signal rev. 4) | KAT vectors from an independent implementation |
+| Integrity | ChaCha20-Poly1305 with header + identities as AD | ratchet tampering tests |
+| Admission control | Channel-bound Ed25519 auth, owner-signed single-use invitations | `host_auth_test`, `auth_flow_test`, `e2e_negative_test` |
+| Sender authenticity | Host-stamped sender + per-pair sessions | `host_relay_test`, `e2e_negative_test` |
+| Ephemerality | Zero disk writes | `check-no-disk-writes.sh` (CI, strace) |
+| Secrets at rest | Argon2id + ChaCha20-Poly1305, 0600 atomic files | `identity` tests |
+| Terminal safety | `sanitize_for_terminal` | exhaustive Unicode test, `e2e_negative_test` |

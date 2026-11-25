@@ -22,146 +22,134 @@
 
 ---
 
-> [!WARNING]
-> **Actual state (v0.1.0-dev) — read before use.** Being fixed by the v0.1.1 correction plan:
-> - Messages are end-to-end encrypted (X3DH + Double Ratchet, one pairwise session per member) and members are admitted only with an owner-signed invitation. The crypto hardening phase (associated data, transactional ratchet, KAT vectors) and the external audit are **not done yet**.
-> - **Ephemeral mode only.** Persistent mode (encrypted storage, stable `.onion`) is not implemented and is refused by the CLI.
-> - Identities are native **Ed25519** keys, not PGP keys.
-> - The host still sees metadata: who is in the room, when and to whom each (padded) message is sent.
->
-> This notice is removed when the remaining guarantees are verified by tests.
+Sanctum is a terminal-first, Tor-only group chat written in Rust. Members talk
+through a relay that runs as a Tor onion service and **cannot read** what they
+say: every message is end-to-end encrypted for each member with its own Double
+Ratchet session.
 
-Sanctum is a terminal-first, Tor-only secure chat tool built in Rust. It provides end-to-end encrypted messaging over Tor Hidden Services with zero reliance on clearnet infrastructure, central servers, or trusted third parties.
+> **Status: v0.1.1, pre-alpha, not audited.** The guarantees below are
+> implemented and tested, but no external review has happened yet. Do not rely on
+> Sanctum when lives are at stake. Read the [threat model](docs/threat-model.md),
+> including what it does *not* protect.
 
 ## Why Sanctum?
 
-Most "secure" messaging tools still depend on centralized servers, phone numbers, or clearnet connections. Sanctum takes a different approach:
+- **Tor-only.** The relay is a v3 onion service; members connect through Tor.
+  Non-onion addresses are refused (loopback only for local tests).
+- **Blind host.** Pairwise X3DH + Double Ratchet sessions between members; the host
+  relays one padded envelope per recipient and never holds a decryption key. A
+  test runs the real binary and checks that nothing the host can read contains a
+  message.
+- **Proven identities.** Ed25519 identities; the host derives fingerprints from
+  keys and admits newcomers only with an owner-signed, single-use invitation.
+- **Ephemeral.** RAM only while hosting and chatting: zero disk writes, checked in
+  CI with `strace`. The identity key itself is encrypted at rest.
+- **Auditable.** Five small crates, no `unsafe`, a [written protocol](docs/protocol.md),
+  known-answer vectors from an independent implementation, fuzzing, and a CI that
+  enforces all of it.
 
-- **Tor-only**: All traffic flows through Tor v3 Hidden Services. No clearnet fallback, ever.
-- **End-to-end encrypted**: Messages are encrypted client-to-client using the Double Ratchet protocol (X3DH + Noise NK). The host relays ciphertext and cannot read message content.
-- **Ephemeral by default**: In ephemeral mode, nothing touches the disk. Keys, messages, and room state exist only in RAM and vanish when the session ends.
-- **PGP identity**: Authentication uses PGP challenge-response. No emails, no phone numbers, no accounts.
-- **Self-hosted**: You host your own rooms. No central server, no metadata collection, no single point of failure.
+## What the host can and cannot see
 
-## Threat Model
+| The host sees | The host never sees |
+|---------------|---------------------|
+| Members' fingerprints and aliases, who is connected | Message text |
+| When each message is sent and to whom, size rounded to 256 bytes | Message timestamps |
+| Its own onion address | Members' private keys or session keys |
 
-Sanctum is designed for users who need strong operational security: journalists communicating with sources, activists coordinating in hostile environments, security teams exchanging sensitive information.
-
-The host operator sees **who is in the room** (PGP fingerprints) but **never the message content** (E2E ciphertext only). In ephemeral mode, a seized machine yields nothing — all state was in RAM.
-
-## Modes
-
-| | Ephemeral | Persistent |
-|---|---|---|
-| Availability | **v0.1** | Not implemented yet (refused by the CLI) |
-| Disk writes | **None** | Encrypted SQLite |
-| Message history | Lost when session ends | Retained (configurable limits) |
-| .onion address | Changes every session | Stable across restarts |
-| Use case | One-off sensitive conversations | Always-on team room on a VM |
+Compare **safety numbers** (`/verify <alias>`) out of band to detect a host that
+would introduce a fake member.
 
 ## Quick Start
 
-> ⚠️ **Pre-alpha** — Sanctum is under active development and not yet ready for production use.
-
 ```bash
-# Prerequisites: Tor must be running with ControlPort enabled
-sudo apt install tor
-# Add to /etc/tor/torrc: ControlPort 9051 and CookieAuthentication 1
+# Prerequisites: Tor with ControlPort 9051 and CookieAuthentication 1,
+# and your user in Tor's group (Debian/Ubuntu: debian-tor). See docs/runbook.md.
+sudo apt install tor protobuf-compiler
+./scripts/setup-tor.sh
 
-# Build from source
+# Build
 git clone https://github.com/Transversed/Sanctum-Project.git
 cd Sanctum-Project
 cargo build --release
+export PATH="$PWD/target/release:$PATH"
 
-# Initialize your profile (creates an Ed25519 identity in ~/.sanctum)
+# Create your identity (Ed25519, encrypted with a passphrase)
 sanctum init --alias alice
 
-# Host a room (prints the ready-to-run invite command, including --host-key)
+# Host a room and open the chat as its owner
 sanctum host create my-room --chat
+#   then, in the chat:  /invite <their_fingerprint>   → a token to send out of band
 
-# The owner generates an invite for a member's fingerprint (other terminal)
-sanctum room invite <their_fingerprint> --room-onion <onion> --room-port <port> \
-    --room-id <room_id> --host-key <host_key>
-
-# Join a room (from another machine)
+# Members join with the token they received
 sanctum join <invite_token>
 ```
 
-## Interactive Chat
+Never run `sanctum` with `sudo`. For a local test without Tor, add `--local` to
+`host create`: invitations then point to `127.0.0.1`.
 
-Sanctum's primary interface is an interactive terminal chat session:
+## Interactive Chat
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ SANCTUM │ #ops-room │ {Owner} alice │ ephemeral │ 3 peers │ Tor: ✓      │
+│ SANCTUM │ #ops-room │ ephemeral │ 3 membre(s) │ Tor: ✓ │ E2E: 🔒          │
 ├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│ [12:03] {Owner}  alice: rendez-vous à 14h                                │
-│ [12:04] {Member} bob: reçu, je serai là                                  │
-│ [12:05] ── charlie a rejoint (synchronisation...) ──                     │
-│ [12:05] ── charlie synchronisation complète ──                           │
-│ [12:06] {Member} charlie: salut tout le monde                            │
-│                                                                          │
+│ ── bob a rejoint la room ──                                              │
+│ 🔒 chiffrement de bout en bout établi avec bob                           │
+│ [12:03] alice: rendez-vous à 14h                                         │
+│ [12:04] bob: reçu, je serai là                                           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ > _                                                                      │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Slash commands: `/who`, `/verify`, `/kick`, `/status`, `/me`, `/exit`.
+Commands: `/who` (members and encryption state), `/verify <alias>` (safety
+number), `/invite <fingerprint> [hours]` (owner), `/help`, `/exit`. Without a
+terminal, `sanctum join` reads lines from stdin and prints one event per line.
+
+## Modes
+
+| | Ephemeral | Persistent |
+|---|---|---|
+| Availability | **v0.1.1** | Planned for v0.2 (refused by the CLI) |
+| Disk writes | None | Encrypted store |
+| `.onion` address | New every session | Stable |
 
 ## Architecture
 
-Sanctum follows a **Clean/Hexagonal architecture** with strict separation of concerns:
-
 ```
-CLI (sanctum-cli)
- └─► Application (sanctum-app)     ← use cases, ChatSession, services
-      └─► Domain (sanctum-domain)  ← entities, ports (traits), events
-           ▲
-      Infrastructure (sanctum-infra) ← Tor, Noise, SQLite, PGP, terminal
-      Crypto (sanctum-crypto)        ← AEAD, KDF, X3DH, Double Ratchet
+CLI (sanctum-cli)        ← binary, chat loop, passphrase prompt
+ └─► Infrastructure (sanctum-infra) ← Tor, Noise transport, host relay, E2E engine, codecs
+      └─► Application (sanctum-app) ← authentication, invitations, sanitization
+           └─► Domain (sanctum-domain) ← entities, ports
+      Crypto (sanctum-crypto)        ← Noise NK, X3DH, Double Ratchet, AEAD, KDF, padding
 ```
 
-Five crates, strict dependency direction, all crypto auditable independently.
+See [docs/architecture.md](docs/architecture.md).
 
-## Cryptographic Protocols
+## Cryptography
 
-| Layer | Protocol | Purpose |
-|-------|----------|---------|
-| Transport | Noise NK (ChaChaPoly, X25519) | Encrypted tunnel client ↔ host |
-| Key exchange | X3DH | Initial session establishment between peers |
-| E2E messaging | Double Ratchet | Forward secrecy per message, post-compromise security |
-| Authentication | PGP challenge-response | Identity verification via PGP fingerprint allowlist |
-| Storage encryption | AES-256-GCM + Argon2id | At-rest encryption for persistent mode |
-
-## Security Properties
-
-- **Forward secrecy**: Compromising current keys does not reveal past messages.
-- **Post-compromise security**: Sessions self-heal after a key compromise through ratchet advancement.
-- **Zero disk (ephemeral)**: Verified via `strace` — no `open(..., O_WRONLY)` on data directories during a full session.
-- **Memory protection**: All keys use `mlock()` + `zeroize` on drop. Panic hook wipes secrets.
-- **Anti-replay**: Monotonic sequence counter + 64-bit sliding bitmap window.
-- **No metadata on host**: The host stores ciphertext blobs indexed by opaque hashes, never plaintext or cleartext fingerprints.
+| Layer | Construction |
+|-------|--------------|
+| Transport | Noise `NK_25519_ChaChaPoly_SHA256`, versioned prologue, host key from the invitation |
+| Authentication | Ed25519 signature bound to the Noise handshake hash; owner-signed single-use invitations |
+| Key agreement | X3DH with Ed25519-signed prekey bundles, one-time prekeys handed out once |
+| Messages | Double Ratchet (Signal rev. 4), ChaCha20-Poly1305, header + identities as associated data |
+| Metadata | Timestamp inside the ciphertext, padding to 256 bytes |
+| Identity at rest | Argon2id (64 MiB) + ChaCha20-Poly1305 |
+| Tor control | SAFECOOKIE |
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [`docs/architecture.md`](docs/architecture.md) | Full technical architecture (2100+ lines) |
-| [`docs/adrs/`](docs/adrs/) | Architecture Decision Records (16 ADRs) |
-| [`docs/threat-model.md`](docs/threat-model.md) | Detailed threat model and mitigations |
-| [`docs/protocol.md`](docs/protocol.md) | Wire protocol specification |
-| [`docs/runbook.md`](docs/runbook.md) | Operational runbook |
-| [`SECURITY.md`](SECURITY.md) | Security policy and reporting |
-
-## Roadmap
-
-| Version | Focus | Status |
-|---------|-------|--------|
-| **v0.1** | MVP: 2-user E2E chat, PGP auth, ephemeral + persistent, interactive CLI | 🔨 In progress |
-| v0.2 | TUI (ratatui), Tor client auth, groups up to 30, auto-reconnect | Planned |
-| v0.3 | File transfer (≤10 MiB), auto-destruct messages, .deb/.rpm/AUR packaging | Planned |
-| v1.0 | MLS for large groups, integrated `arti`, external security audit | Planned |
+| [`docs/protocol.md`](docs/protocol.md) | Wire protocol v2 |
+| [`docs/threat-model.md`](docs/threat-model.md) | What is and is not protected |
+| [`docs/architecture.md`](docs/architecture.md) | Crates, runtime view, invariants, tests |
+| [`docs/runbook.md`](docs/runbook.md) | Installation and operations (French) |
+| [`ROADMAP.md`](ROADMAP.md) | What comes next |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
+| [`SECURITY.md`](SECURITY.md) | Reporting vulnerabilities |
+| [`docs/design/`](docs/design/) | Original design documents (historical) |
 
 ## Building
 
@@ -191,11 +179,13 @@ Priorities for contributions: security review, Tor integration testing, crypto p
 
 ## License
 
-AGPL — see [LICENSE](LICENSE).
+AGPL-3.0-only — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-Sanctum is experimental software in active development. It has **not been audited**. Do not use it for life-or-death situations until a formal security audit has been completed. Use at your own risk.
+Sanctum is experimental software. It has **not been audited**. Do not use it for
+life-or-death situations until a formal security audit has been completed. Use at
+your own risk.
 
 ---
 

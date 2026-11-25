@@ -6,8 +6,8 @@
 
 If you discover a security vulnerability in Sanctum, please report it responsibly:
 
-1. **Email**: Send a PGP-encrypted email to the maintainers (key available on request via a secure channel)
-2. **GitHub Private Advisory**: Use [GitHub Security Advisories](https://github.com/sanctum-chat/sanctum/security/advisories/new) to report privately
+1. **GitHub Private Advisory** (preferred): use [GitHub Security Advisories](https://github.com/Transversed/Sanctum-Project/security/advisories/new) to report privately
+2. **Email**: contact the maintainer through GitHub and ask for an encrypted channel
 
 Include in your report:
 
@@ -30,7 +30,9 @@ Include in your report:
 The following are in scope for security reports:
 
 - Cryptographic weaknesses (Noise NK, X3DH, Double Ratchet implementation)
-- Authentication bypasses (PGP challenge-response)
+- Authentication or admission bypasses (Ed25519 challenge-response, invitations)
+- Any way for the host to read, forge or attribute wrongly a message
+- Terminal injection through remote content
 - Anti-replay circumvention
 - Disk writes in ephemeral mode
 - Secret leakage (keys in logs, core dumps, swap)
@@ -56,22 +58,21 @@ Sanctum follows these principles — deviations are considered bugs:
 3. **Host-blind**: The host never has access to plaintext messages
 4. **Zeroize on drop**: All key material is wiped from memory when no longer needed
 5. **No fallback**: No clearnet, no protocol downgrade, no weak cipher suites
-6. **Minimal trust**: Authentication via PGP fingerprint allowlist, not server authority
+6. **Minimal trust**: the host never trusts a declared fingerprint; admission requires a proven key and an owner-signed invitation
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| v0.1.x (current) | ✅ |
-| < v0.1 | ❌ |
+| v0.1.1 (current) | ✅ |
+| ≤ v0.1.0 | ❌ (protocol v1: no real E2E, unauthenticated admission) |
 
 ## Audit Status
 
-Sanctum has **not yet undergone a formal security audit**. An external audit is planned for the v1.0 milestone. Use at your own risk.
-
-## PGP Key for Encrypted Reports
-
-*(To be added when the project maintainer's dedicated reporting key is generated)*
+Sanctum has **not yet undergone a formal security audit**. v0.1.1 closes the
+findings of an internal review (see CHANGELOG.md); an external audit is planned.
+The residual risks are listed in [docs/threat-model.md](docs/threat-model.md).
+Use at your own risk.
 
 ---
 
