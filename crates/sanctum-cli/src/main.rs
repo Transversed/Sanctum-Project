@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 mod banner;
 mod commands;
 mod config;
+mod passphrase;
 
 /// Sanctum — encrypted group chat over Tor hidden services.
 #[derive(Parser)]

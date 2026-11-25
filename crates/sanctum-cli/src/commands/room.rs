@@ -80,8 +80,8 @@ fn run_invite(
     _config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load our identity (inviter)
-    let identity =
-        IdentityAdapter::load_from_disk().map_err(|e| format!("{e}\nRun `sanctum init` first."))?;
+    let identity = IdentityAdapter::load_from_disk(crate::passphrase::read_existing()?.as_bytes())
+        .map_err(|e| format!("{e}\nRun `sanctum init` first."))?;
     let inviter_fp = identity.fingerprint().clone();
 
     let invited_fp =

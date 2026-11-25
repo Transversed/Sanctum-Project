@@ -15,7 +15,7 @@ pub async fn run(
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load our real identity
-    let identity = IdentityAdapter::load_from_disk()
+    let identity = IdentityAdapter::load_from_disk(crate::passphrase::read_existing()?.as_bytes())
         .map_err(|e| format!("{e}\nRun `sanctum init --alias <n>` first."))?;
     let local_fp = identity.fingerprint().clone();
     let alias = config.identity.alias.clone();

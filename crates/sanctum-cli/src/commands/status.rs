@@ -19,10 +19,10 @@ pub async fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("  home:     {}", home.display());
     println!("  alias:    {}", config.identity.alias);
 
-    match IdentityAdapter::load_from_disk() {
-        Ok(id) => println!(
-            "  identity: Ed25519, fingerprint {}",
-            id.fingerprint().short()
+    match IdentityAdapter::public_fingerprint_in(&IdentityAdapter::default_dir()) {
+        Ok(fp) => println!(
+            "  identity: Ed25519 (encrypted at rest), fingerprint {}",
+            fp.short()
         ),
         Err(_) => println!("  identity: none"),
     }
