@@ -36,7 +36,13 @@ async fn host_is_blind() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     // Everyone must reach two pairwise sessions before talking.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    for (p, name) in procs.iter_mut().zip(names) {
+        assert!(
+            p.wait_encrypted_with(2, WAIT),
+            "{name} has no session with both others:\n{}",
+            p.raw_output()
+        );
+    }
 
     let secrets: Vec<String> = names
         .iter()

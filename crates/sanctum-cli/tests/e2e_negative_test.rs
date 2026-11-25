@@ -37,7 +37,7 @@ impl Raw {
         Self { crypto, session }
     }
 
-    /// Answer bundles with key exchanges until the line is quiet.
+    /// Complete the key exchanges (in either direction) until quiet.
     async fn pump(&mut self) {
         while let Ok(Ok(frame)) = timeout(
             Duration::from_millis(500),
@@ -45,10 +45,16 @@ impl Raw {
         )
         .await
         {
-            if let Ok(WireMessage::BundleResponse(b)) = proto_codec::proto_decode(&frame) {
-                let reply = self.crypto.on_bundle(&b.bundle.unwrap()).unwrap();
-                let f = proto_codec::proto_encode(&reply).unwrap();
-                self.session.transport.send_frame(&f).await.unwrap();
+            match proto_codec::proto_decode(&frame) {
+                Ok(WireMessage::BundleResponse(b)) => {
+                    let reply = self.crypto.on_bundle(&b.bundle.unwrap()).unwrap();
+                    let f = proto_codec::proto_encode(&reply).unwrap();
+                    self.session.transport.send_frame(&f).await.unwrap();
+                }
+                Ok(WireMessage::RatchetKeyExchange(r)) => {
+                    self.crypto.on_key_exchange(&r).unwrap();
+                }
+                _ => {}
             }
         }
     }
@@ -118,7 +124,12 @@ async fn spoofed_sender_is_replaced_by_the_authenticated_one() {
     let pa = alice.spawn(&["join", &host.invite(&fp(&alice.fingerprint))]);
     assert!(pa.wait_for("authenticated", WAIT));
     let pb = bob.spawn(&["join", &host.invite(&fp(&bob.fingerprint))]);
-    assert!(pb.wait_for("authenticated", WAIT));
+    // Bob's bundle is published before the hostile member joins.
+    assert!(
+        pb.wait_for("sessions en cours", WAIT),
+        "{}",
+        pb.raw_output()
+    );
     let mut mallory = Raw::join(&host, "mallory").await;
     mallory.pump().await;
     assert!(
@@ -153,11 +164,16 @@ async fn terminal_escape_sequences_never_reach_the_terminal() {
     let host = TestHost::start().await;
     let bob = User::init("bob");
     let pb = bob.spawn(&["join", &host.invite(&fp(&bob.fingerprint))]);
-    assert!(pb.wait_for("authenticated", WAIT));
+    // Bob's bundle is published before the hostile member joins.
+    assert!(
+        pb.wait_for("sessions en cours", WAIT),
+        "{}",
+        pb.raw_output()
+    );
     let mut evil = Raw::join(&host, "\x1b[2J\x1b[31mevil\x07").await;
     evil.pump().await;
     assert!(
-        pb.wait_for("chiffrement de bout en bout établi avec", WAIT),
+        pb.wait_for("chiffrement de bout en bout établi", WAIT),
         "{}",
         pb.raw_output()
     );

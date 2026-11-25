@@ -118,6 +118,21 @@ impl Proc {
         false
     }
 
+    /// Ask `/who` until `peers` members are listed as encrypted (🔒).
+    pub fn wait_encrypted_with(&mut self, peers: usize, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            let before = self.output().len();
+            self.send("/who");
+            std::thread::sleep(Duration::from_millis(400));
+            let fresh = self.output().split_off(before);
+            if fresh.iter().filter(|l| l.contains("🔒 chiffré")).count() >= peers {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Wait for the process to exit; returns its success flag.
     pub fn wait_exit(&mut self, timeout: Duration) -> Option<bool> {
         let start = Instant::now();
