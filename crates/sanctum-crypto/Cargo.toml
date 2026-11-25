@@ -6,30 +6,32 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]
-sanctum-domain = { path = "../sanctum-domain" }
+sanctum-domain.workspace = true
 
 # AEAD ciphers
-aes-gcm = "0.10"
-chacha20poly1305 = "0.10"
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
 
 # Key derivation
-hkdf = "0.12"
-sha2 = "0.10"
-argon2 = "0.5"
+hkdf.workspace = true
+sha2.workspace = true
+argon2.workspace = true
 
 # X25519 Diffie-Hellman
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek.workspace = true
 
 # Ed25519 signatures (for SPK signing)
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek.workspace = true
 
 # Noise protocol (NK handshake)
-snow = "0.9"
+snow.workspace = true
 
 # Cryptographic RNG
-rand = "0.8"
+rand.workspace = true
 
 # Secret memory management
 zeroize.workspace = true
