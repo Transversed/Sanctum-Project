@@ -43,9 +43,6 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityConfig {
-    /// PGP key ID.
-    #[serde(default)]
-    pub pgp_key_id: String,
     /// Display alias.
     #[serde(default = "default_alias")]
     pub alias: String,
@@ -186,7 +183,6 @@ fn default_timestamp_format() -> String {
 impl Default for IdentityConfig {
     fn default() -> Self {
         Self {
-            pgp_key_id: String::new(),
             alias: default_alias(),
         }
     }

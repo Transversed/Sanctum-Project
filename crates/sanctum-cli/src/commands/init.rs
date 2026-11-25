@@ -41,7 +41,6 @@ pub async fn run(alias: Option<String>, config: &Config) -> Result<(), Box<dyn s
     let config_content = format!(
         r#"[identity]
 alias = "{alias}"
-pgp_key_id = "{fingerprint}"
 
 [tor]
 control_port = {control_port}
@@ -55,7 +54,6 @@ listen_port = {listen_port}
 auto_chat_on_join = true
 backlog_display = 50
 "#,
-        fingerprint = identity.fingerprint().as_str(),
         control_port = config.tor.control_port,
         socks_port = config.tor.socks_port,
         listen_port = config.host.listen_port,
