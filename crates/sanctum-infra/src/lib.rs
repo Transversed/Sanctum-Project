@@ -48,6 +48,9 @@ pub mod noise_transport;
 // E2E sessions module
 pub mod e2e_session;
 
+/// Client-side room encryption: signed bundles, pairwise sessions, fan-out.
+pub mod room_crypto;
+
 /// Generate the host's Noise static key pair: (private, public).
 /// The private key is wiped from memory when dropped.
 pub fn noise_keygen() -> Result<(zeroize::Zeroizing<Vec<u8>>, Vec<u8>), SanctumError> {

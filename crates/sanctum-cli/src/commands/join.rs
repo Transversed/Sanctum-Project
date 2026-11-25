@@ -4,7 +4,6 @@ use crate::commands::chat_loop;
 use crate::config::Config;
 use sanctum_app::sanitize::sanitize_for_terminal;
 use sanctum_infra::client_connector::{self, ClientCredentials};
-use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
 use tokio_util::sync::CancellationToken;
@@ -12,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 pub async fn run(
     token: &str,
     no_chat: bool,
-    insecure_plaintext: bool,
     config: &Config,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -38,9 +36,6 @@ pub async fn run(
     // Validate: is this token for us?
     invite_codec::validate_invite(&invite, &local_fp)?;
     println!("[sanctum] token valid (for our fingerprint)");
-
-    // E2E keys
-    let e2e_keys = PeerPrivateKeys::generate(5);
 
     // Connect: Tor for .onion, direct TCP only for loopback (local tests).
     // Anything else would be a clearnet connection: refused.
@@ -95,15 +90,12 @@ pub async fn run(
         room_name: invite.room_id.as_str().chars().take(8).collect(),
         room_mode: "ephemeral".into(),
         tor_connected: !is_loopback,
-        insecure_plaintext,
         inviter: None,
     };
-    chat_loop::run_with_config(
+    chat_loop::run(
         session.transport,
-        local_fp,
+        std::sync::Arc::new(identity),
         alias,
-        Some(e2e_keys),
-        false,
         shutdown,
         chat_cfg,
     )

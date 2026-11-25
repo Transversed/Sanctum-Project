@@ -1,15 +1,25 @@
-//! Interactive chat loop — crossterm raw mode, status bar, colored messages, bottom prompt.
+//! Interactive chat loop — crossterm raw mode, status bar, colored messages,
+//! bottom prompt.
+//!
+//! All room content is end-to-end encrypted with [`RoomCrypto`]: pairwise
+//! X3DH + Double Ratchet sessions with every member, one envelope per
+//! recipient. There is no plaintext mode (invariant I1): a message that
+//! cannot be encrypted for anyone is not sent.
+//!
+//! Without a terminal (stdin not a TTY), lines are read from stdin and every
+//! event is printed on its own stdout line, which is what scripts and the
+//! end-to-end binary tests use.
 
 use sanctum_app::auth_service::unix_now;
 use sanctum_app::sanitize::{sanitize_alias, sanitize_for_terminal};
 use sanctum_domain::entities::member::{Fingerprint, Role};
+use sanctum_domain::errors::SanctumError;
 use sanctum_infra::codec::message_types;
-use sanctum_infra::e2e_session::{E2eSession, InitialMessage, PeerPrivateKeys};
-use sanctum_infra::identity::IdentityAdapter;
+use sanctum_infra::identity::{Ed25519Verifier, IdentityAdapter};
 use sanctum_infra::invite_codec::{self, InviteTarget};
 use sanctum_infra::noise_transport::NoiseTransport;
-use sanctum_infra::proto_codec::{self, pb, WireMessage};
-use std::sync::Arc;
+use sanctum_infra::proto_codec::{self, WireMessage};
+use sanctum_infra::room_crypto::{KeyExchangeOutcome, RoomCrypto};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::style::{
@@ -17,8 +27,9 @@ use crossterm::style::{
 };
 use crossterm::terminal::{self, ClearType};
 use crossterm::{cursor, execute, queue};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::{self, Stdout, Write};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// What the room owner needs to issue invitations from the chat.
@@ -34,9 +45,6 @@ pub struct ChatConfig {
     pub room_name: String,
     pub room_mode: String,
     pub tor_connected: bool,
-    /// Allow sending without E2E (`--insecure-plaintext`). The host reads
-    /// everything. Off by default; temporary until E2E is wired (P3.5).
-    pub insecure_plaintext: bool,
     /// Present for the room owner: enables `/invite`.
     pub inviter: Option<InviteIssuer>,
 }
@@ -47,339 +55,386 @@ impl Default for ChatConfig {
             room_name: "room".into(),
             room_mode: "ephemeral".into(),
             tor_connected: false,
-            insecure_plaintext: false,
             inviter: None,
         }
     }
 }
 
-pub async fn run_with_config(
-    mut transport: NoiseTransport,
-    local_fp: Fingerprint,
+/// Terminal state used by the drawing functions.
+struct Screen {
+    out: Stdout,
+    raw: bool,
+    /// Emit colors (stdout is a terminal).
+    color: bool,
+    rows: u16,
+    cols: u16,
+}
+
+/// Chat state (data only; behaviour lives in free functions).
+struct ChatState {
+    crypto: RoomCrypto,
+    /// Connected peers: full fingerprint → sanitized alias.
+    peers: BTreeMap<String, String>,
     local_alias: String,
-    e2e_keys: Option<PeerPrivateKeys>,
-    _is_host: bool,
+    input: String,
+}
+
+pub async fn run(
+    mut transport: NoiseTransport,
+    identity: Arc<IdentityAdapter>,
+    local_alias: String,
     shutdown: CancellationToken,
     cfg: ChatConfig,
 ) {
-    let mut e2e_session: Option<E2eSession> = None;
-    let fp_str = local_fp.as_str().to_string();
-    let mut seq: u64 = 1;
-    let mut peer_count: u32 = 1;
-    let mut input_buf = String::new();
+    let mut st = ChatState {
+        crypto: RoomCrypto::new(identity, Arc::new(Ed25519Verifier)),
+        peers: BTreeMap::new(),
+        local_alias,
+        input: String::new(),
+    };
 
-    let mut aliases: HashMap<String, String> = HashMap::new();
-    aliases.insert(fp_str.clone(), local_alias.clone());
-
-    let raw_ok = terminal::enable_raw_mode().is_ok();
-    let mut out = io::stdout();
+    let raw = io::IsTerminal::is_terminal(&io::stdin()) && terminal::enable_raw_mode().is_ok();
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
-
-    if raw_ok {
-        let _ = execute!(out, terminal::Clear(ClearType::All), cursor::Hide);
-        // Scroll region: line 1 (below status bar) to line rows-2 (above prompt)
-        let _ = write!(out, "\x1b[2;{}r", rows - 1);
-        let _ = out.flush();
-        draw_status(&mut out, &cfg, peer_count, false, cols);
-        draw_prompt(&mut out, "", rows);
-    }
-    if cfg.insecure_plaintext {
-        if raw_ok {
-            goto_msg(&mut out, rows);
-        }
-        write_sys(
-            &mut out,
-            "⚠ --insecure-plaintext : vos messages partent NON CHIFFRÉS, l'hôte lit tout.",
-        );
+    let mut scr = Screen {
+        out: io::stdout(),
+        raw,
+        color: io::IsTerminal::is_terminal(&io::stdout()),
+        rows: rows.max(4),
+        cols,
+    };
+    if scr.raw {
+        let _ = execute!(scr.out, terminal::Clear(ClearType::All), cursor::Hide);
+        // Scroll region: below the status bar, above the prompt.
+        let _ = write!(scr.out, "\x1b[2;{}r", scr.rows - 1);
+        refresh(&mut scr, &st, &cfg);
     }
 
-    // Keyboard channel
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::channel::<KeyEvent>(64);
-    let use_raw = raw_ok;
-    tokio::task::spawn_blocking(move || {
-        if !use_raw {
-            loop {
-                let mut line = String::new();
-                match io::stdin().read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let t = line.trim().to_string();
-                        if t == "/exit" || t == "/quit" || t == "/q" {
-                            let _ = key_tx.blocking_send(KeyEvent::Quit);
-                            break;
-                        }
-                        if !t.is_empty() {
-                            let _ = key_tx.blocking_send(KeyEvent::Line(t));
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            return;
-        }
-        loop {
-            match event::read() {
-                Ok(Event::Key(k)) => match k.code {
-                    KeyCode::Enter => {
-                        let _ = key_tx.blocking_send(KeyEvent::Enter);
-                    }
-                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let _ = key_tx.blocking_send(KeyEvent::Quit);
-                        break;
-                    }
-                    KeyCode::Esc => {
-                        let _ = key_tx.blocking_send(KeyEvent::Quit);
-                        break;
-                    }
-                    KeyCode::Char(c) => {
-                        let _ = key_tx.blocking_send(KeyEvent::Char(c));
-                    }
-                    KeyCode::Backspace => {
-                        let _ = key_tx.blocking_send(KeyEvent::Backspace);
-                    }
-                    _ => {}
-                },
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
-    });
+    // Publish our signed prekey bundle: peers can now reach us.
+    if let Err(e) = send(&mut transport, &st.crypto.publish_bundle()).await {
+        sys(&mut scr, &st, &format!("connexion perdue: {e}"));
+        restore_terminal(&mut scr);
+        return;
+    }
+    sys(
+        &mut scr,
+        &st,
+        "chiffrement de bout en bout : sessions en cours d'établissement (/who pour l'état)",
+    );
+
+    let mut key_rx = spawn_keyboard(scr.raw);
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
 
             result = transport.recv_frame() => {
-                match result {
-                    Ok(frame) => {
-                        match frame.message_type {
-                            message_types::ROOM_MESSAGE => {
-                                if let Ok(WireMessage::RoomMessage(m)) = proto_codec::proto_decode(&frame) {
-                                    let is_own = m.sender_fingerprint == fp_str;
-                                    if let Some(content) = try_decrypt(&m, &mut e2e_session, &e2e_keys) {
-                                        let ts = m.timestamp % 86400;
-                                        let h = ts / 3600;
-                                        let min = (ts % 3600) / 60;
-                                        let sender = alias_for(&m.sender_fingerprint, &aliases);
-                                        if raw_ok { goto_msg(&mut out, rows); }
-                                        write_msg(&mut out, h, min, &sender, &content, is_own);
-                                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
-                                    }
-                                }
-                            }
-                            message_types::PEER_READY => {
-                                if let Ok(WireMessage::PeerReady(p)) = proto_codec::proto_decode(&frame) {
-                                    let a = sanitize_alias(&p.display_alias)
-                                        .unwrap_or_else(|| short(&p.fingerprint).to_string());
-                                    aliases.insert(p.fingerprint.clone(), a.clone());
-                                    peer_count += 1;
-                                    if raw_ok { goto_msg(&mut out, rows); }
-                                    write_sys(&mut out, &format!("── {} a rejoint la room ──", a));
-                                    if raw_ok {
-                                        draw_status(&mut out, &cfg, peer_count, e2e_session.is_some(), cols);
-                                        draw_prompt(&mut out, &input_buf, rows);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                let frame = match result {
+                    Ok(f) => f,
                     Err(e) => {
-                        if raw_ok { goto_msg(&mut out, rows); }
-                        write_sys(&mut out, &format!("connexion perdue: {e}"));
+                        sys(&mut scr, &st, &format!("connexion perdue: {e}"));
                         break;
                     }
+                };
+                if let Err(e) = on_frame(&frame, &mut st, &mut transport, &mut scr, &cfg).await {
+                    sys(&mut scr, &st, &format!("connexion perdue: {e}"));
+                    break;
                 }
             }
 
             ev = key_rx.recv() => {
-                match ev {
+                let line = match ev {
                     Some(KeyEvent::Char(c)) => {
-                        input_buf.push(c);
-                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
+                        st.input.push(c);
+                        draw_prompt(&mut scr, &st.input);
+                        continue;
                     }
                     Some(KeyEvent::Backspace) => {
-                        input_buf.pop();
-                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
+                        st.input.pop();
+                        draw_prompt(&mut scr, &st.input);
+                        continue;
                     }
-                    Some(KeyEvent::Enter) | Some(KeyEvent::Line(_)) => {
-                        let text = match &ev {
-                            Some(KeyEvent::Line(t)) => t.clone(),
-                            _ => { let t = input_buf.trim().to_string(); input_buf.clear(); t }
-                        };
-                        if text.is_empty() { if raw_ok { draw_prompt(&mut out, &input_buf, rows); } continue; }
-                        if text == "/exit" || text == "/quit" || text == "/q" { break; }
-
-                        if text == "/invite" || text.starts_with("/invite ") {
-                            let reply = invite_command(&text, cfg.inviter.as_ref());
-                            if raw_ok { goto_msg(&mut out, rows); }
-                            match reply {
-                                Ok(lines) => {
-                                    for (i, line) in lines.iter().enumerate() {
-                                        if i > 0 && raw_ok { goto_msg(&mut out, rows); }
-                                        write_sys(&mut out, line);
-                                    }
-                                }
-                                Err(e) => write_sys(&mut out, &format!("✗ {e}")),
-                            }
-                            if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
-                            continue;
-                        }
-
-                        // I1: no silent plaintext. Refuse unless explicitly allowed.
-                        let (ct, rh) = match outgoing_payload(&text, &mut e2e_session, cfg.insecure_plaintext) {
-                            Ok(p) => p,
-                            Err(refusal) => {
-                                if raw_ok { goto_msg(&mut out, rows); }
-                                write_sys(&mut out, refusal.message());
-                                if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
-                                continue;
-                            }
-                        };
-                        let frame = proto_codec::proto_encode(&WireMessage::RoomMessage(pb::RoomMessage {
-                            sender_fingerprint: fp_str.clone(),
-                            sequence_number: seq,
-                            ratchet_header: rh,
-                            ciphertext: ct,
-                            nonce: vec![0u8; 12],
-                            timestamp: now_ts(),
-                        })).unwrap();
-
-                        if let Err(e) = transport.send_frame(&frame).await {
-                            write_sys(&mut out, &format!("send: {e}"));
-                            break;
-                        }
-                        seq += 1;
-                        if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
-                    }
+                    Some(KeyEvent::Enter) => std::mem::take(&mut st.input).trim().to_string(),
+                    Some(KeyEvent::Line(t)) => t,
                     Some(KeyEvent::Quit) | None => break,
+                };
+                if line.is_empty() {
+                    draw_prompt(&mut scr, &st.input);
+                    continue;
+                }
+                match on_line(&line, &mut st, &mut transport, &mut scr, &cfg).await {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(e) => {
+                        sys(&mut scr, &st, &format!("connexion perdue: {e}"));
+                        break;
+                    }
                 }
             }
         }
     }
 
-    // Cleanup
-    if raw_ok {
-        let _ = write!(out, "\x1b[r"); // reset scroll region
-        let _ = terminal::disable_raw_mode();
-        let _ = execute!(out, cursor::Show, cursor::MoveTo(0, rows.saturating_sub(1)));
-    }
-    let _ = write!(
-        out,
-        "\n{}session terminée. Secrets purgés.{}\n",
-        SetForegroundColor(Color::DarkYellow),
-        ResetColor
+    restore_terminal(&mut scr);
+    write_sys(
+        &mut scr,
+        "session terminée. Clés de session effacées de la mémoire.",
     );
-    let _ = out.flush();
+    let _ = scr.out.flush();
     transport.shutdown().await;
 }
 
-// ── Key events ──
+// ── Network events ──
 
-enum KeyEvent {
-    Char(char),
-    Backspace,
-    Enter,
-    Line(String),
-    Quit,
+async fn send(transport: &mut NoiseTransport, msg: &WireMessage) -> Result<(), SanctumError> {
+    transport.send_frame(&proto_codec::proto_encode(msg)?).await
 }
 
-// ── Drawing ──
+fn alias_of(st: &ChatState, fp: &str) -> String {
+    st.peers
+        .get(fp)
+        .cloned()
+        .unwrap_or_else(|| short(fp).to_string())
+}
 
-fn draw_status(out: &mut Stdout, cfg: &ChatConfig, peers: u32, e2e: bool, cols: u16) {
-    let room = &cfg.room_name;
-    let mode = &cfg.room_mode;
-    let insecure_plaintext = cfg.insecure_plaintext;
-    let tor_s = if cfg.tor_connected { "✓" } else { "✗" };
-    let e2e_s = if e2e { "✓" } else { "─" };
-    let warn = if insecure_plaintext && !e2e {
-        " │ ⚠ NON CHIFFRÉ — l'hôte lit tout"
-    } else {
-        ""
+/// All connected peers have an established session.
+fn e2e_complete(st: &ChatState) -> bool {
+    !st.peers.is_empty()
+        && st.peers.keys().all(|fp| {
+            Fingerprint::new(fp.clone())
+                .map(|f| st.crypto.has_session(&f))
+                .unwrap_or(false)
+        })
+}
+
+async fn on_frame(
+    frame: &sanctum_infra::codec::Frame,
+    st: &mut ChatState,
+    transport: &mut NoiseTransport,
+    scr: &mut Screen,
+    cfg: &ChatConfig,
+) -> Result<(), SanctumError> {
+    let Ok(msg) = proto_codec::proto_decode(frame) else {
+        return Ok(());
     };
-    let bar =
-        format!(" SANCTUM │ #{room} │ {mode} │ {peers} peers │ Tor: {tor_s} │ E2E: {e2e_s}{warn} ");
-    let bg = if warn.is_empty() {
-        Color::DarkGrey
-    } else {
-        Color::DarkRed
+    match msg {
+        WireMessage::RoomMessage(m) => {
+            let sender = alias_of(st, &m.sender_fingerprint);
+            match st.crypto.decrypt(&m) {
+                Ok(d) => {
+                    if scr.raw {
+                        goto_msg(scr);
+                    }
+                    write_msg(scr, d.timestamp, &sender, &d.text, false);
+                    draw_prompt(scr, &st.input);
+                }
+                Err(_) => sys(scr, st, &format!("[message indéchiffrable de {sender}]")),
+            }
+        }
+        WireMessage::PeerReady(p) => {
+            let alias = sanitize_alias(&p.display_alias)
+                .unwrap_or_else(|| short(&p.fingerprint).to_string());
+            st.peers.insert(p.fingerprint.clone(), alias.clone());
+            sys(scr, st, &format!("── {alias} a rejoint la room ──"));
+            refresh(scr, st, cfg);
+        }
+        WireMessage::PeerLeft(p) => {
+            let alias = alias_of(st, &p.fingerprint);
+            st.peers.remove(&p.fingerprint);
+            if let Ok(fp) = Fingerprint::new(p.fingerprint) {
+                st.crypto.on_peer_left(&fp);
+            }
+            sys(scr, st, &format!("── {alias} a quitté la room ──"));
+            refresh(scr, st, cfg);
+        }
+        WireMessage::BundleResponse(b) => {
+            let Some(bundle) = b.bundle else {
+                return Ok(());
+            };
+            let who = alias_of(st, &bundle.owner_fingerprint);
+            match st.crypto.on_bundle(&bundle) {
+                Ok(exchange) => send(transport, &exchange).await?,
+                Err(e) => sys(scr, st, &format!("⚠ clés de {who} rejetées : {e}")),
+            }
+            refresh(scr, st, cfg);
+        }
+        WireMessage::RatchetKeyExchange(r) => {
+            let who = alias_of(st, &r.sender_fingerprint);
+            match st.crypto.on_key_exchange(&r) {
+                Ok(KeyExchangeOutcome::Established(_)) => {
+                    sys(
+                        scr,
+                        st,
+                        &format!("🔒 chiffrement de bout en bout établi avec {who}"),
+                    );
+                }
+                Ok(KeyExchangeOutcome::KeptOurs(_)) => {}
+                Err(e) => sys(scr, st, &format!("⚠ échange de clés de {who} rejeté : {e}")),
+            }
+            refresh(scr, st, cfg);
+        }
+        WireMessage::OPKDepleted(_) => {
+            let refill = st.crypto.refresh_opks();
+            send(transport, &refill).await?;
+        }
+        _ => {}
+    }
+    // Sessions initiated by us become usable as soon as the peer has the
+    // key exchange; announce them when the bundle exchange completes.
+    if frame.message_type == message_types::BUNDLE_RESPONSE {
+        let n = st.crypto.session_count();
+        if n > 0 && e2e_complete(st) {
+            sys(
+                scr,
+                st,
+                &format!("🔒 chiffrement de bout en bout établi ({n} membre(s))"),
+            );
+        }
+    }
+    Ok(())
+}
+
+// ── User input ──
+
+/// Handle one input line. Returns `Ok(false)` to quit.
+async fn on_line(
+    text: &str,
+    st: &mut ChatState,
+    transport: &mut NoiseTransport,
+    scr: &mut Screen,
+    cfg: &ChatConfig,
+) -> Result<bool, SanctumError> {
+    let command = text.split_whitespace().next().unwrap_or("");
+    match command {
+        "/exit" | "/quit" | "/q" => return Ok(false),
+        "/help" => {
+            for line in [
+                "/who                      membres et état du chiffrement",
+                "/verify <alias|fp>        safety number à comparer hors bande",
+                "/invite <fp> [heures]     (owner) émettre une invitation signée",
+                "/exit                     quitter",
+            ] {
+                sys(scr, st, line);
+            }
+        }
+        "/who" => {
+            if st.peers.is_empty() {
+                sys(scr, st, "personne d'autre dans la room");
+            }
+            let lines: Vec<String> = st
+                .peers
+                .iter()
+                .map(|(fp, alias)| {
+                    let ok = Fingerprint::new(fp.clone())
+                        .map(|f| st.crypto.has_session(&f))
+                        .unwrap_or(false);
+                    let state = if ok { "🔒 chiffré" } else { "⏳ en cours" };
+                    format!("  {alias} ({}) — {state}", short(fp))
+                })
+                .collect();
+            for l in lines {
+                sys(scr, st, &l);
+            }
+        }
+        "/verify" => match verify_command(text, st) {
+            Ok(lines) => lines.iter().for_each(|l| sys(scr, st, l)),
+            Err(e) => sys(scr, st, &format!("✗ {e}")),
+        },
+        "/invite" => match invite_command(text, cfg.inviter.as_ref()) {
+            Ok(lines) => lines.iter().for_each(|l| sys(scr, st, l)),
+            Err(e) => sys(scr, st, &format!("✗ {e}")),
+        },
+        c if c.starts_with('/') => sys(scr, st, &format!("✗ commande inconnue {c} (/help)")),
+        _ => send_text(text, st, transport, scr).await?,
+    }
+    draw_prompt(scr, &st.input);
+    Ok(true)
+}
+
+/// Encrypt `text` for every peer with a session and send it (I1).
+async fn send_text(
+    text: &str,
+    st: &mut ChatState,
+    transport: &mut NoiseTransport,
+    scr: &mut Screen,
+) -> Result<(), SanctumError> {
+    let now = unix_now();
+    let out = match st.crypto.encrypt_for_peers(text, now) {
+        Ok(out) => out,
+        Err(e) => {
+            sys(scr, st, &format!("✗ message NON envoyé : {e}"));
+            return Ok(());
+        }
     };
-    let w = cols as usize;
-    let padded = format!("{:<w$}", bar);
-    let _ = queue!(out, cursor::SavePosition, cursor::MoveTo(0, 0));
-    let _ = write!(
-        out,
-        "{}{}{}{}{}",
-        SetBackgroundColor(bg),
-        SetForegroundColor(Color::White),
-        SetAttribute(Attribute::Bold),
-        padded,
-        ResetColor
-    );
-    let _ = queue!(out, cursor::RestorePosition);
-    let _ = out.flush();
+    if out.is_empty() {
+        sys(
+            scr,
+            st,
+            "✗ message NON envoyé : aucun membre avec qui le chiffrement de bout en bout est établi",
+        );
+        return Ok(());
+    }
+    for (_, msg) in &out {
+        send(transport, msg).await?;
+    }
+    if scr.raw {
+        goto_msg(scr);
+    }
+    let alias = st.local_alias.clone();
+    write_msg(scr, now, &alias, text, true);
+    let pending: Vec<String> = st
+        .peers
+        .iter()
+        .filter(|(fp, _)| !out.iter().any(|(to, _)| to.as_str() == fp.as_str()))
+        .map(|(_, a)| a.clone())
+        .collect();
+    if !pending.is_empty() {
+        sys(
+            scr,
+            st,
+            &format!(
+                "⚠ non remis (chiffrement en cours) : {}",
+                pending.join(", ")
+            ),
+        );
+    }
+    Ok(())
 }
 
-fn draw_prompt(out: &mut Stdout, input: &str, rows: u16) {
-    let _ = queue!(
-        out,
-        cursor::MoveTo(0, rows.saturating_sub(1)),
-        terminal::Clear(ClearType::CurrentLine)
-    );
-    let _ = write!(
-        out,
-        "{}{}> {}{}",
-        SetForegroundColor(Color::Green),
-        SetAttribute(Attribute::Bold),
-        ResetColor,
-        input
-    );
-    let _ = queue!(out, cursor::Show);
-    let _ = out.flush();
+/// `/verify <alias|fingerprint prefix>`: safety number with that peer.
+fn verify_command(text: &str, st: &ChatState) -> Result<Vec<String>, String> {
+    let who = text
+        .split_whitespace()
+        .nth(1)
+        .ok_or("usage: /verify <alias|fingerprint>")?;
+    let fp = find_peer(&st.peers, who).ok_or_else(|| format!("aucun membre « {who} »"))?;
+    let fingerprint = Fingerprint::new(fp.clone()).map_err(|e| e.to_string())?;
+    let number = st
+        .crypto
+        .safety_number(&fingerprint)
+        .ok_or("pas encore de session chiffrée avec ce membre")?;
+    Ok(vec![
+        format!(
+            "safety number avec {} ({}) :",
+            alias_of(st, &fp),
+            short(&fp)
+        ),
+        format!("  {number}"),
+        "comparez-le hors bande (de vive voix) : s'il diffère, quelqu'un s'interpose.".into(),
+    ])
 }
 
-fn goto_msg(out: &mut Stdout, rows: u16) {
-    // Position at bottom of scroll region, write newline to scroll up
-    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(2)));
-    let _ = write!(out, "\r\n");
-    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(2)));
+/// Find a connected peer by exact alias or fingerprint prefix (≥ 4 chars).
+fn find_peer(peers: &BTreeMap<String, String>, who: &str) -> Option<String> {
+    if let Some((fp, _)) = peers.iter().find(|(_, a)| a.as_str() == who) {
+        return Some(fp.clone());
+    }
+    let prefix = who.to_ascii_uppercase();
+    if prefix.len() < 4 {
+        return None;
+    }
+    let mut matches = peers.keys().filter(|fp| fp.starts_with(&prefix));
+    let first = matches.next()?.clone();
+    matches.next().is_none().then_some(first)
 }
-
-fn write_msg(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, is_own: bool) {
-    // I5: everything printed here may come from the network.
-    let sender = sanitize_for_terminal(sender);
-    let content = sanitize_for_terminal(content);
-    let color = if is_own { Color::Green } else { Color::Cyan };
-    let _ = write!(
-        out,
-        "{}[{:02}:{:02}]{} {}{}{}{}: {}{}",
-        SetAttribute(Attribute::Dim),
-        h,
-        min,
-        ResetColor,
-        SetForegroundColor(color),
-        SetAttribute(Attribute::Bold),
-        sender,
-        ResetColor,
-        content,
-        ResetColor,
-    );
-    let _ = out.flush();
-}
-
-fn write_sys(out: &mut Stdout, text: &str) {
-    let text = sanitize_for_terminal(text);
-    let _ = write!(
-        out,
-        "{}{}{}",
-        SetForegroundColor(Color::DarkYellow),
-        text,
-        ResetColor
-    );
-    let _ = out.flush();
-}
-
-// ── Crypto helpers ──
 
 /// `/invite <fingerprint> [ttl_hours]`: issue an owner-signed invitation.
 fn invite_command(text: &str, issuer: Option<&InviteIssuer>) -> Result<Vec<String>, String> {
@@ -418,117 +473,203 @@ fn invite_command(text: &str, issuer: Option<&InviteIssuer>) -> Result<Vec<Strin
     ])
 }
 
-/// Why an outgoing message was not sent.
-#[derive(Debug, PartialEq, Eq)]
-enum SendRefusal {
-    /// No E2E session with the room and plaintext was not explicitly allowed.
-    NoE2eSession,
-    /// The ratchet failed to encrypt: never fall back to plaintext.
-    EncryptionFailed,
+// ── Keyboard ──
+
+enum KeyEvent {
+    Char(char),
+    Backspace,
+    Enter,
+    Line(String),
+    Quit,
 }
 
-impl SendRefusal {
-    fn message(&self) -> &'static str {
-        match self {
-            SendRefusal::NoE2eSession => {
-                "✗ message NON envoyé : chiffrement de bout en bout non établi \
-                 (relancez avec --insecure-plaintext pour accepter que l'hôte lise tout)"
+fn spawn_keyboard(raw: bool) -> tokio::sync::mpsc::Receiver<KeyEvent> {
+    let (key_tx, key_rx) = tokio::sync::mpsc::channel::<KeyEvent>(64);
+    tokio::task::spawn_blocking(move || {
+        if !raw {
+            loop {
+                let mut line = String::new();
+                match io::stdin().read_line(&mut line) {
+                    Ok(0) | Err(_) => {
+                        let _ = key_tx.blocking_send(KeyEvent::Quit);
+                        break;
+                    }
+                    Ok(_) => {
+                        let t = line.trim().to_string();
+                        if !t.is_empty() && key_tx.blocking_send(KeyEvent::Line(t)).is_err() {
+                            break;
+                        }
+                    }
+                }
             }
-            SendRefusal::EncryptionFailed => "✗ message NON envoyé : échec du chiffrement",
+            return;
         }
+        loop {
+            let ev = match event::read() {
+                Ok(Event::Key(k)) => match k.code {
+                    KeyCode::Enter => KeyEvent::Enter,
+                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        KeyEvent::Quit
+                    }
+                    KeyCode::Esc => KeyEvent::Quit,
+                    KeyCode::Char(c) => KeyEvent::Char(c),
+                    KeyCode::Backspace => KeyEvent::Backspace,
+                    _ => continue,
+                },
+                Ok(_) => continue,
+                Err(_) => KeyEvent::Quit,
+            };
+            let quit = matches!(ev, KeyEvent::Quit);
+            if key_tx.blocking_send(ev).is_err() || quit {
+                break;
+            }
+        }
+    });
+    key_rx
+}
+
+// ── Drawing ──
+
+fn restore_terminal(scr: &mut Screen) {
+    if scr.raw {
+        let _ = write!(scr.out, "\x1b[r"); // reset scroll region
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(
+            scr.out,
+            cursor::Show,
+            cursor::MoveTo(0, scr.rows.saturating_sub(1))
+        );
+        let _ = writeln!(scr.out);
     }
 }
 
-/// Build the payload of an outgoing message (invariant I1).
-///
-/// With an E2E session the text is encrypted; an encryption error is a
-/// refusal, never a plaintext fallback. Without a session, plaintext is
-/// only produced when the user passed `--insecure-plaintext`.
-fn outgoing_payload(
-    text: &str,
-    e2e: &mut Option<E2eSession>,
-    insecure_plaintext: bool,
-) -> Result<(Vec<u8>, Option<pb::RatchetHeader>), SendRefusal> {
-    match e2e {
-        Some(s) => match s.encrypt(text.as_bytes()) {
-            Ok((h, ct)) => Ok((
-                ct,
-                Some(pb::RatchetHeader {
-                    dh_public: h.dh_public.to_vec(),
-                    previous_chain_length: h.prev_chain_len,
-                    message_number: h.msg_num,
-                }),
-            )),
-            Err(_) => Err(SendRefusal::EncryptionFailed),
-        },
-        None if insecure_plaintext => Ok((text.as_bytes().to_vec(), None)),
-        None => Err(SendRefusal::NoE2eSession),
-    }
+fn refresh(scr: &mut Screen, st: &ChatState, cfg: &ChatConfig) {
+    let peers = st.peers.len() as u32 + 1;
+    draw_status(scr, cfg, peers, e2e_complete(st));
+    draw_prompt(scr, &st.input);
 }
 
-fn try_decrypt(
-    m: &pb::RoomMessage,
-    e2e: &mut Option<E2eSession>,
-    keys: &Option<PeerPrivateKeys>,
-) -> Option<String> {
-    if let Some(ref mut s) = e2e {
-        if let Some(ref rh) = m.ratchet_header {
-            if rh.dh_public.len() == 32 {
-                let mut pk = [0u8; 32];
-                pk.copy_from_slice(&rh.dh_public);
-                let hdr = sanctum_crypto::ratchet::Header {
-                    dh_public: pk,
-                    prev_chain_len: rh.previous_chain_length,
-                    msg_num: rh.message_number,
-                };
-                return match s.decrypt(&hdr, &m.ciphertext) {
-                    Ok(pt) => Some(String::from_utf8_lossy(&pt).to_string()),
-                    Err(_) => None,
-                };
-            }
-        }
-        None
-    } else if let Ok(init) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
-        if let Some(ref k) = keys {
-            if let Ok(session) = E2eSession::respond(k, &init) {
-                *e2e = Some(session);
-            }
-        }
-        None
+/// Print a system line (sanitized) and redraw the prompt.
+fn sys(scr: &mut Screen, st: &ChatState, text: &str) {
+    if scr.raw {
+        goto_msg(scr);
+    }
+    write_sys(scr, text);
+    draw_prompt(scr, &st.input);
+}
+
+fn draw_status(scr: &mut Screen, cfg: &ChatConfig, peers: u32, e2e: bool) {
+    if !scr.raw {
+        return;
+    }
+    let tor_s = if cfg.tor_connected {
+        "✓"
     } else {
-        // A peer running with --insecure-plaintext: show it, clearly flagged.
-        Some(format!(
-            "⚠ [non chiffré] {}",
-            String::from_utf8_lossy(&m.ciphertext)
-        ))
-    }
+        "✗ local"
+    };
+    let e2e_s = if e2e { "🔒" } else { "⏳" };
+    let bar = format!(
+        " SANCTUM │ #{} │ {} │ {peers} membre(s) │ Tor: {tor_s} │ E2E: {e2e_s} ",
+        sanitize_for_terminal(&cfg.room_name),
+        cfg.room_mode
+    );
+    let w = scr.cols as usize;
+    let padded = format!("{:<w$}", bar);
+    let _ = queue!(scr.out, cursor::SavePosition, cursor::MoveTo(0, 0));
+    let _ = write!(
+        scr.out,
+        "{}{}{}{}{}",
+        SetBackgroundColor(Color::DarkGrey),
+        SetForegroundColor(Color::White),
+        SetAttribute(Attribute::Bold),
+        padded,
+        ResetColor
+    );
+    let _ = queue!(scr.out, cursor::RestorePosition);
+    let _ = scr.out.flush();
 }
 
-fn alias_for<'a>(fp: &'a str, map: &'a HashMap<String, String>) -> String {
-    map.get(fp)
-        .cloned()
-        .unwrap_or_else(|| short(fp).to_string())
+fn draw_prompt(scr: &mut Screen, input: &str) {
+    if !scr.raw {
+        return;
+    }
+    let _ = queue!(
+        scr.out,
+        cursor::MoveTo(0, scr.rows.saturating_sub(1)),
+        terminal::Clear(ClearType::CurrentLine)
+    );
+    let _ = write!(
+        scr.out,
+        "{}{}> {}{}",
+        SetForegroundColor(Color::Green),
+        SetAttribute(Attribute::Bold),
+        ResetColor,
+        input
+    );
+    let _ = queue!(scr.out, cursor::Show);
+    let _ = scr.out.flush();
+}
+
+fn goto_msg(scr: &mut Screen) {
+    // Bottom of the scroll region, newline to scroll up.
+    let _ = queue!(scr.out, cursor::MoveTo(0, scr.rows.saturating_sub(2)));
+    let _ = write!(scr.out, "\r\n");
+    let _ = queue!(scr.out, cursor::MoveTo(0, scr.rows.saturating_sub(2)));
+}
+
+fn end_line(scr: &mut Screen) {
+    if !scr.raw {
+        let _ = writeln!(scr.out);
+    }
+    let _ = scr.out.flush();
+}
+
+fn write_msg(scr: &mut Screen, timestamp: u64, sender: &str, content: &str, is_own: bool) {
+    // I5: everything printed here may come from the network.
+    let sender = sanitize_for_terminal(sender);
+    let content = sanitize_for_terminal(content);
+    let ts = timestamp % 86_400;
+    let (h, m) = (ts / 3600, (ts % 3600) / 60);
+    if scr.color {
+        let color = if is_own { Color::Green } else { Color::Cyan };
+        let _ = write!(
+            scr.out,
+            "{}[{h:02}:{m:02}]{} {}{}{sender}{}: {content}{}",
+            SetAttribute(Attribute::Dim),
+            ResetColor,
+            SetForegroundColor(color),
+            SetAttribute(Attribute::Bold),
+            ResetColor,
+            ResetColor,
+        );
+    } else {
+        let _ = write!(scr.out, "[{h:02}:{m:02}] {sender}: {content}");
+    }
+    end_line(scr);
+}
+
+fn write_sys(scr: &mut Screen, text: &str) {
+    let text = sanitize_for_terminal(text);
+    if scr.color {
+        let _ = write!(
+            scr.out,
+            "{}{text}{}",
+            SetForegroundColor(Color::DarkYellow),
+            ResetColor
+        );
+    } else {
+        let _ = write!(scr.out, "{text}");
+    }
+    end_line(scr);
 }
 
 fn short(fp: &str) -> &str {
-    if fp.len() >= 8 {
-        &fp[..8]
-    } else {
-        fp
-    }
-}
-
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    fp.get(..8).unwrap_or(fp)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sanctum_infra::e2e_session::PeerPrivateKeys;
 
     fn issuer() -> InviteIssuer {
         InviteIssuer {
@@ -555,7 +696,7 @@ mod tests {
         let token = invite_codec::decode_invite(&lines[1]).unwrap();
         assert_eq!(&token.invited_fingerprint, invitee.fingerprint());
         assert_eq!(token.role, Role::Member);
-        assert!(sanctum_infra::identity::Ed25519Verifier.verify(
+        assert!(Ed25519Verifier.verify(
             &iss.identity.public_key_bytes(),
             &token.signed_data(),
             &token.signature
@@ -578,30 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_plaintext_by_default() {
-        let mut none: Option<E2eSession> = None;
-        assert_eq!(
-            outgoing_payload("secret", &mut none, false),
-            Err(SendRefusal::NoE2eSession)
-        );
-    }
-
-    #[test]
-    fn plaintext_only_with_explicit_flag() {
-        let mut none: Option<E2eSession> = None;
-        let (ct, header) = outgoing_payload("hello", &mut none, true).unwrap();
-        assert_eq!(ct, b"hello");
-        assert!(header.is_none());
-    }
-
-    #[test]
-    fn encrypts_when_session_exists_even_with_flag() {
-        let alice = PeerPrivateKeys::generate(1);
-        let bob = PeerPrivateKeys::generate(1);
-        let (session, _) = E2eSession::initiate(&alice, &bob.public_keys()).unwrap();
-        let mut s = Some(session);
-        let (ct, header) = outgoing_payload("hello", &mut s, true).unwrap();
-        assert_ne!(ct, b"hello");
-        assert!(header.is_some());
+    fn find_peer_by_alias_or_unambiguous_prefix() {
+        let mut peers = BTreeMap::new();
+        peers.insert("ABCD1111".repeat(5), "alice".to_string());
+        peers.insert("ABCD2222".repeat(5), "bob".to_string());
+        assert_eq!(find_peer(&peers, "bob"), Some("ABCD2222".repeat(5)));
+        assert_eq!(find_peer(&peers, "abcd1"), Some("ABCD1111".repeat(5)));
+        assert_eq!(find_peer(&peers, "ABCD"), None, "ambiguous prefix");
+        assert_eq!(find_peer(&peers, "ab"), None, "prefix too short");
+        assert_eq!(find_peer(&peers, "carol"), None);
     }
 }

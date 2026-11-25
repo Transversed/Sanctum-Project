@@ -76,69 +76,87 @@ message MemberInfo {
 }
 
 // ============================================================
-// X3DH Key Exchange
+// Prekey bundles (X3DH)
 // ============================================================
+//
+// spk_signature = Ed25519(identity_sk,
+//     "SANCTUM-SPK-v2" ‖ identity_key ‖ signed_pre_key)
+// A bundle is accepted only if the signature verifies with
+// ed25519_public_key AND Fingerprint(ed25519_public_key) ==
+// owner_fingerprint. One-time prekeys are not signed (as in X3DH): a host
+// substituting one cannot learn the shared secret.
+
+message OneTimePreKey {
+    uint32 id = 1;
+    bytes public_key = 2;             // X25519
+}
 
 message PreKeyBundle {
     string owner_fingerprint = 1;
-    bytes identity_key = 2;           // IK: X25519 long-term public
-    bytes signed_pre_key = 3;         // SPK: X25519 signed
-    bytes spk_signature = 4;          // Signature of SPK by IK
-    repeated bytes one_time_pre_keys = 5;  // OPKs: X25519 one-time
+    bytes ed25519_public_key = 2;     // long-term identity, fingerprint source
+    bytes identity_key = 3;           // IK: X25519, bound by spk_signature
+    bytes signed_pre_key = 4;         // SPK: X25519
+    bytes spk_signature = 5;
+    repeated OneTimePreKey one_time_pre_keys = 6;
 }
 
-// C→H : 0x21
+// C→H : 0x21 — sent once, right after authentication.
 message PublishBundle {
     PreKeyBundle bundle = 1;
 }
 
-// C→H : 0x22
-message RequestBundle {
-    string target_fingerprint = 1;
-}
-
-// H→C : 0x23
+// H→C : 0x23 — bundle of a member who published before the receiver.
+// It carries at most one one-time prekey; the host hands each one out
+// once. The receiver (the later publisher) initiates X3DH.
 message BundleResponse {
     PreKeyBundle bundle = 1;
-    bool found = 2;
 }
 
-// H→C : 0x24
+// H→C : 0x24 — the receiver's one-time prekey pool is running low.
 message OPKDepleted {
-    uint32 remaining = 1;             // Number of OPKs remaining
+    uint32 remaining = 1;
 }
 
 // C→H : 0x25
 message RefreshOPK {
-    repeated bytes new_opks = 1;      // New one-time pre-keys
+    repeated OneTimePreKey new_opks = 1;
 }
 
-// ============================================================
-// Ratchet Key Exchange
-// ============================================================
-
-// C↔C (via H) : 0x20
+// C→H→C : 0x20 — X3DH initial message, routed to the recipient only.
+// The host stamps sender_fingerprint (I3).
 message RatchetKeyExchange {
     string sender_fingerprint = 1;
     string recipient_fingerprint = 2;
-    bytes identity_key = 3;           // Sender IK public
-    bytes ephemeral_key = 4;          // Sender EK (X3DH ephemeral)
-    uint32 opk_id = 5;               // Which OPK was used (0 = none)
-    bytes ciphertext = 6;             // Initial ciphertext (first ratchet message)
+    PreKeyBundle sender_identity = 3; // initiator's signed identity, no OPK
+    bytes ephemeral_key = 4;          // X3DH ephemeral key
+    bool has_opk = 5;
+    uint32 opk_id = 6;
+    RatchetHeader header = 7;         // first ratchet message (empty plaintext)
+    bytes ciphertext = 8;
 }
 
 // ============================================================
-// Room Messages (E2E encrypted, opaque to host)
+// Room messages: pairwise fan-out, opaque to the host
 // ============================================================
+//
+// The sender encrypts each message once per recipient with their pairwise
+// Double Ratchet session and sends one RoomMessage per recipient.
+// Plaintext = pad(timestamp_u64_be ‖ utf8 text, 256 bytes): the host sees
+// neither the timestamp nor the exact length. The host forwards the
+// RoomMessage to envelope.recipient_fingerprint only, with
+// sender_fingerprint stamped from the authenticated connection (I3).
+
+message Envelope {
+    string recipient_fingerprint = 1;
+    RatchetHeader header = 2;
+    bytes ciphertext = 3;
+}
 
 // C→H / H→C : 0x10
 message RoomMessage {
     string sender_fingerprint = 1;
     uint64 sequence_number = 2;
-    RatchetHeader ratchet_header = 3;
-    bytes ciphertext = 4;             // AES-256-GCM ciphertext (padded)
-    bytes nonce = 5;                  // 12 bytes AEAD nonce
-    uint64 timestamp = 6;            // Unix seconds
+    Envelope envelope = 3;
 }
 
 message RatchetHeader {
@@ -193,6 +211,11 @@ message UpdateConfig {
 message PeerReady {
     string fingerprint = 1;
     string display_alias = 2;
+}
+
+// H→all : 0x13 — a member disconnected; peers drop its session.
+message PeerLeft {
+    string fingerprint = 1;
 }
 
 // ============================================================

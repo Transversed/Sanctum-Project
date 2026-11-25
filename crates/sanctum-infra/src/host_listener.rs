@@ -6,14 +6,19 @@
 //!    the fingerprint is derived from the proven key (I2). Unknown identities
 //!    need a valid, single-use, owner-signed invitation.
 //! 3. PeerReady exchange with the other connected members
-//! 4. Relay loop: the host stamps the authenticated sender on every
-//!    `RoomMessage` (I3) and never looks inside the ciphertext.
+//! 4. Bundle exchange: the member publishes its signed prekey bundle; the
+//!    host sends it the bundles of members who published earlier (handing
+//!    out each one-time prekey once), and the member initiates X3DH.
+//! 5. Relay loop: key exchanges and room messages are routed to their single
+//!    recipient with the authenticated sender stamped (I3). The host never
+//!    holds a key that decrypts them.
 
 use crate::codec::{self, message_types, Frame};
 use crate::identity::Ed25519Verifier;
 use crate::invite_codec;
 use crate::noise_transport::NoiseTransport;
 use crate::proto_codec::{self, pb, WireMessage};
+use crate::room_crypto::{verify_bundle, MAX_BUNDLE_OPKS};
 use crate::tcp_transport::TcpTransport;
 use sanctum_app::auth_service::{unix_now, Admission, AuthResponse, AuthService, RoomAdmission};
 use sanctum_app::host_service::HostService;
@@ -21,7 +26,7 @@ use sanctum_app::sanitize::sanitize_alias;
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Member, Role};
 use sanctum_domain::errors::SanctumError;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -29,8 +34,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use zeroize::Zeroizing;
 
-/// A client sending this many undecodable frames is disconnected.
+/// A client sending this many invalid frames is disconnected.
 const MAX_INVALID_FRAMES: u32 = 3;
+/// Below this many one-time prekeys, the owner is asked for more.
+const OPK_LOW_WATERMARK: usize = 5;
+
+/// A published bundle: identity part + pool of one-time prekeys.
+struct StoredBundle {
+    bundle: pb::PreKeyBundle,
+    opks: VecDeque<pb::OneTimePreKey>,
+}
 
 #[derive(Debug, Clone)]
 struct RoutedMessage {
@@ -50,6 +63,8 @@ struct HostState {
     aliases: Mutex<HashMap<String, String>>,
     route_tx: broadcast::Sender<RoutedMessage>,
     verifier: Ed25519Verifier,
+    /// Bundles of connected members, in RAM only.
+    bundles: Mutex<HashMap<Fingerprint, StoredBundle>>,
 }
 
 pub struct HostListener {
@@ -78,6 +93,7 @@ impl HostListener {
                 aliases: Mutex::new(HashMap::new()),
                 route_tx,
                 verifier: Ed25519Verifier,
+                bundles: Mutex::new(HashMap::new()),
             }),
             shutdown,
         }
@@ -183,21 +199,33 @@ async fn handle_client(
                         break;
                     }
                 };
-                match frame.message_type {
-                    message_types::ROOM_MESSAGE => {
-                        // I3: the sender is the authenticated peer, whatever
-                        // the frame claims. Undecodable frames are dropped.
-                        let Some(frame) = stamp_sender(&frame, &fingerprint) else {
-                            invalid_frames += 1;
-                            if invalid_frames >= MAX_INVALID_FRAMES {
-                                break;
-                            }
-                            continue;
-                        };
-                        relay_to_others(&st, &fingerprint, frame).await;
+                let handled = match frame.message_type {
+                    message_types::PUBLISH_BUNDLE => {
+                        on_publish_bundle(&st, &fingerprint, &frame, &mut transport).await?
                     }
-                    message_types::PING => transport.send_frame(&codec::pong_frame()).await?,
-                    _ => {}
+                    message_types::REFRESH_OPK => on_refresh_opk(&st, &fingerprint, &frame).await,
+                    message_types::RATCHET_KEY_EXCHANGE | message_types::ROOM_MESSAGE => {
+                        // I3: stamped with the authenticated sender, routed to
+                        // its single recipient. Invalid frames are dropped.
+                        match route_to_recipient(&frame, &fingerprint) {
+                            Some((to, frame)) => {
+                                send_to(&st, &to, frame).await;
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    message_types::PING => {
+                        transport.send_frame(&codec::pong_frame()).await?;
+                        true
+                    }
+                    _ => false,
+                };
+                if !handled {
+                    invalid_frames += 1;
+                    if invalid_frames >= MAX_INVALID_FRAMES {
+                        break;
+                    }
                 }
             }
 
@@ -219,39 +247,129 @@ async fn handle_client(
     st.host_service.lock().await.remove_client(&fingerprint);
     st.clients.lock().await.remove(&conn_id);
     st.aliases.lock().await.remove(fingerprint.as_str());
+    st.bundles.lock().await.remove(&fingerprint);
+    if let Ok(frame) = proto_codec::proto_encode(&WireMessage::PeerLeft(pb::PeerLeft {
+        fingerprint: fingerprint.as_str().to_string(),
+    })) {
+        let _ = st.route_tx.send(RoutedMessage {
+            sender: fingerprint.clone(),
+            frame,
+        });
+    }
     transport.shutdown().await;
     debug!(conn_id, "client left");
     Ok(())
 }
 
-/// Forward `frame` to every other ready member.
-async fn relay_to_others(st: &HostState, sender: &Fingerprint, frame: Frame) {
-    let connection_ids: Vec<u64> = {
-        let svc = st.host_service.lock().await;
-        svc.route_recipients(sender)
-            .iter()
-            .filter_map(|fp| svc.connection_id_for(fp))
-            .collect()
-    };
-    let clients = st.clients.lock().await;
-    for cid in connection_ids {
-        if let Some(tx) = clients.get(&cid) {
-            let _ = tx.send(frame.clone()).await;
-        }
+/// Send `frame` to the connected member `to` (dropped if absent).
+async fn send_to(st: &HostState, to: &Fingerprint, frame: Frame) {
+    let cid = st.host_service.lock().await.connection_id_for(to);
+    let Some(cid) = cid else { return };
+    let tx = st.clients.lock().await.get(&cid).cloned();
+    if let Some(tx) = tx {
+        let _ = tx.send(frame).await;
     }
 }
 
-/// Re-encode a `RoomMessage` with the authenticated sender fingerprint.
-///
-/// Returns `None` if the frame is not a decodable `RoomMessage`.
-fn stamp_sender(frame: &Frame, sender: &Fingerprint) -> Option<Frame> {
-    match proto_codec::proto_decode(frame) {
-        Ok(WireMessage::RoomMessage(mut m)) => {
+/// Decode a key exchange or room message, stamp the authenticated sender
+/// (I3) and return its single recipient. `None` if invalid or self-addressed.
+fn route_to_recipient(frame: &Frame, sender: &Fingerprint) -> Option<(Fingerprint, Frame)> {
+    let msg = proto_codec::proto_decode(frame).ok()?;
+    let (recipient, stamped) = match msg {
+        WireMessage::RatchetKeyExchange(mut m) => {
             m.sender_fingerprint = sender.as_str().to_string();
-            proto_codec::proto_encode(&WireMessage::RoomMessage(m)).ok()
+            (
+                m.recipient_fingerprint.clone(),
+                WireMessage::RatchetKeyExchange(m),
+            )
         }
-        _ => None,
+        WireMessage::RoomMessage(mut m) => {
+            m.sender_fingerprint = sender.as_str().to_string();
+            let to = m.envelope.as_ref()?.recipient_fingerprint.clone();
+            (to, WireMessage::RoomMessage(m))
+        }
+        _ => return None,
+    };
+    let recipient = Fingerprint::new(recipient).ok()?;
+    if &recipient == sender {
+        return None;
     }
+    Some((recipient, proto_codec::proto_encode(&stamped).ok()?))
+}
+
+/// Store a member's bundle, then give it the bundles of members who
+/// published before it (one one-time prekey each): it initiates X3DH.
+async fn on_publish_bundle(
+    st: &HostState,
+    me: &Fingerprint,
+    frame: &Frame,
+    transport: &mut NoiseTransport,
+) -> Result<bool, SanctumError> {
+    let Ok(WireMessage::PublishBundle(pb::PublishBundle {
+        bundle: Some(mut bundle),
+    })) = proto_codec::proto_decode(frame)
+    else {
+        return Ok(false);
+    };
+    // The bundle must be signed by the authenticated identity.
+    match verify_bundle(&bundle, &st.verifier) {
+        Ok(v) if &v.fingerprint == me => {}
+        _ => return Ok(false),
+    }
+    let opks: VecDeque<pb::OneTimePreKey> = std::mem::take(&mut bundle.one_time_pre_keys).into();
+
+    let mut to_send = Vec::new();
+    let mut depleted = Vec::new();
+    {
+        let mut bundles = st.bundles.lock().await;
+        for (fp, stored) in bundles.iter_mut() {
+            if fp == me {
+                continue;
+            }
+            let mut b = stored.bundle.clone();
+            b.one_time_pre_keys = stored.opks.pop_front().into_iter().collect();
+            if stored.opks.len() < OPK_LOW_WATERMARK {
+                depleted.push((fp.clone(), stored.opks.len() as u32));
+            }
+            to_send.push(b);
+        }
+        bundles.insert(me.clone(), StoredBundle { bundle, opks });
+    }
+    for b in to_send {
+        let msg = WireMessage::BundleResponse(pb::BundleResponse { bundle: Some(b) });
+        transport
+            .send_frame(&proto_codec::proto_encode(&msg)?)
+            .await?;
+    }
+    for (fp, remaining) in depleted {
+        if let Ok(f) =
+            proto_codec::proto_encode(&WireMessage::OPKDepleted(pb::OpkDepleted { remaining }))
+        {
+            send_to(st, &fp, f).await;
+        }
+    }
+    Ok(true)
+}
+
+/// Add fresh one-time prekeys to the sender's pool (bounded).
+async fn on_refresh_opk(st: &HostState, me: &Fingerprint, frame: &Frame) -> bool {
+    let Ok(WireMessage::RefreshOPK(r)) = proto_codec::proto_decode(frame) else {
+        return false;
+    };
+    if r.new_opks.iter().any(|o| o.public_key.len() != 32) {
+        return false;
+    }
+    let mut bundles = st.bundles.lock().await;
+    let Some(stored) = bundles.get_mut(me) else {
+        return false;
+    };
+    for opk in r.new_opks {
+        if stored.opks.len() >= MAX_BUNDLE_OPKS {
+            break;
+        }
+        stored.opks.push_back(opk);
+    }
+    true
 }
 
 /// Alias accepted by the domain (≤ 20 bytes), derived from untrusted input.

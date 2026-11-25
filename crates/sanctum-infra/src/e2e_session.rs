@@ -1,166 +1,192 @@
-//! End-to-end encryption session between two peers.
+//! Pairwise end-to-end session: X3DH key agreement + Double Ratchet.
 //!
-//! Orchestrates X3DH (initial key agreement) and Double Ratchet
-//! (per-message forward secrecy) into a single component.
-//!
-//! Usage:
-//!   1. Alice calls E2eSession::initiate() with Bob's public keys
-//!   2. Alice gets an InitialMessage to send to Bob
-//!   3. Bob calls E2eSession::respond() with Alice's InitialMessage
-//!   4. Both now have E2eSessions with matching shared secrets
-//!   5. encrypt() / decrypt() for every message from now on
+//! 1. Bob publishes [`PeerPublicKeys`] (signed by his Ed25519 identity, see
+//!    `room_crypto`); the host hands each one-time prekey out at most once.
+//! 2. Alice calls [`E2eSession::initiate`]: X3DH, ratchet init, and a first
+//!    ratchet message (empty plaintext) so Bob can answer right away.
+//! 3. Bob calls [`E2eSession::respond`] with the [`InitialMessage`] and the
+//!    one-time prekey it names; the caller deletes that prekey afterwards.
+//! 4. `encrypt` / `decrypt` for every later message.
 
 use sanctum_crypto::ratchet::{Header, RatchetState};
 use sanctum_crypto::x3dh::{self, X25519Keypair};
 use sanctum_domain::errors::SanctumError;
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// The initial message sent from Alice to Bob to establish E2E.
-/// Bob needs this (plus his own keys) to derive the same shared secret.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InitialMessage {
-    /// Alice's identity public key (32 bytes).
-    pub alice_identity_pub: [u8; 32],
-    /// Alice's ephemeral public key from X3DH (32 bytes).
-    pub alice_ephemeral_pub: [u8; 32],
-    /// Which OPK Alice used (index), or None if no OPK was available.
-    pub opk_index: Option<u32>,
-    /// First encrypted message (optional, can be empty).
-    pub ciphertext: Vec<u8>,
-    /// Ratchet header for the first message.
-    pub header: Option<Header>,
+/// One-time prekey as published: id + X25519 public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneTimePrekey {
+    pub id: u32,
+    pub public: [u8; 32],
 }
 
-/// Keys that a peer publishes for others to initiate X3DH.
+/// Public keys a peer publishes so others can initiate X3DH with it.
 #[derive(Debug, Clone)]
 pub struct PeerPublicKeys {
-    /// Identity key (long-term).
+    /// X25519 identity key (bound to the Ed25519 identity by signature).
     pub identity_pub: [u8; 32],
-    /// Signed pre-key.
+    /// X25519 signed prekey.
     pub signed_prekey_pub: [u8; 32],
-    /// One-time pre-keys (optional pool).
-    pub one_time_prekeys: Vec<[u8; 32]>,
+    /// At most one one-time prekey when used to initiate.
+    pub one_time_prekey: Option<OneTimePrekey>,
 }
 
-/// Keys that a peer keeps private.
+/// Private keys a peer keeps for the lifetime of its process (RAM only).
 pub struct PeerPrivateKeys {
-    /// Identity keypair.
     pub identity: X25519Keypair,
-    /// Signed pre-key pair.
     pub signed_prekey: X25519Keypair,
-    /// One-time pre-key pairs.
-    pub one_time_prekeys: Vec<X25519Keypair>,
+    one_time_prekeys: BTreeMap<u32, X25519Keypair>,
+    next_opk_id: u32,
 }
 
 impl PeerPrivateKeys {
-    /// Generate a fresh set of keys (identity + SPK + N OPKs).
-    pub fn generate(num_opks: usize) -> Self {
-        Self {
+    /// Fresh identity, signed prekey and `num_opks` one-time prekeys.
+    pub fn generate(num_opks: u32) -> Self {
+        let mut keys = Self {
             identity: X25519Keypair::generate(),
             signed_prekey: X25519Keypair::generate(),
-            one_time_prekeys: (0..num_opks).map(|_| X25519Keypair::generate()).collect(),
-        }
+            one_time_prekeys: BTreeMap::new(),
+            next_opk_id: 1,
+        };
+        keys.generate_opks(num_opks);
+        keys
     }
 
-    /// Extract the public keys for publishing.
-    pub fn public_keys(&self) -> PeerPublicKeys {
+    /// Create `n` new one-time prekeys and return their public parts.
+    pub fn generate_opks(&mut self, n: u32) -> Vec<OneTimePrekey> {
+        (0..n)
+            .map(|_| {
+                let id = self.next_opk_id;
+                self.next_opk_id = self.next_opk_id.wrapping_add(1).max(1);
+                let kp = X25519Keypair::generate();
+                let public = kp.public.to_bytes();
+                self.one_time_prekeys.insert(id, kp);
+                OneTimePrekey { id, public }
+            })
+            .collect()
+    }
+
+    /// Public one-time prekeys still available.
+    pub fn one_time_prekeys(&self) -> Vec<OneTimePrekey> {
+        self.one_time_prekeys
+            .iter()
+            .map(|(id, kp)| OneTimePrekey {
+                id: *id,
+                public: kp.public.to_bytes(),
+            })
+            .collect()
+    }
+
+    /// Number of one-time prekeys still held.
+    pub fn opk_count(&self) -> usize {
+        self.one_time_prekeys.len()
+    }
+
+    /// X25519 identity public key.
+    pub fn identity_pub(&self) -> [u8; 32] {
+        self.identity.public.to_bytes()
+    }
+
+    /// Signed prekey public key.
+    pub fn signed_prekey_pub(&self) -> [u8; 32] {
+        self.signed_prekey.public.to_bytes()
+    }
+
+    /// Public keys for an initiator (consumes nothing locally).
+    pub fn public_keys(&self, opk: Option<OneTimePrekey>) -> PeerPublicKeys {
         PeerPublicKeys {
-            identity_pub: self.identity.public.to_bytes(),
-            signed_prekey_pub: self.signed_prekey.public.to_bytes(),
-            one_time_prekeys: self
-                .one_time_prekeys
-                .iter()
-                .map(|kp| kp.public.to_bytes())
-                .collect(),
+            identity_pub: self.identity_pub(),
+            signed_prekey_pub: self.signed_prekey_pub(),
+            one_time_prekey: opk,
         }
     }
 }
 
-/// An established E2E session with one peer.
+/// X3DH initial message, sent by the initiator to the responder.
+#[derive(Debug, Clone)]
+pub struct InitialMessage {
+    /// Initiator's X25519 identity key.
+    pub initiator_identity_pub: [u8; 32],
+    /// Initiator's X3DH ephemeral key.
+    pub ephemeral_pub: [u8; 32],
+    /// One-time prekey used, if any.
+    pub opk_id: Option<u32>,
+    /// First ratchet message (empty plaintext).
+    pub header: Header,
+    pub ciphertext: Vec<u8>,
+}
+
+/// An established Double Ratchet session with one peer.
 pub struct E2eSession {
     ratchet: RatchetState,
     peer_identity_pub: [u8; 32],
 }
 
 impl E2eSession {
-    /// Alice initiates an E2E session with Bob.
-    ///
-    /// Performs X3DH, initializes the Double Ratchet, and returns
-    /// the session + an InitialMessage to send to Bob.
+    /// Initiate a session with a peer whose public keys were verified.
     pub fn initiate(
-        alice_keys: &PeerPrivateKeys,
-        bob_public: &PeerPublicKeys,
+        ours: &PeerPrivateKeys,
+        theirs: &PeerPublicKeys,
     ) -> Result<(Self, InitialMessage), SanctumError> {
-        // Pick an OPK if available
-        let opk = bob_public.one_time_prekeys.first();
-        let opk_index = if opk.is_some() { Some(0u32) } else { None };
-
-        // X3DH
-        let x3dh_result = x3dh::initiate(
-            &alice_keys.identity,
-            &bob_public.identity_pub,
-            &bob_public.signed_prekey_pub,
-            opk,
+        let opk = theirs.one_time_prekey.map(|o| o.public);
+        let x3dh = x3dh::initiate(
+            &ours.identity,
+            &theirs.identity_pub,
+            &theirs.signed_prekey_pub,
+            opk.as_ref(),
         )?;
-
-        // Initialize Double Ratchet (Alice side)
-        let ratchet =
-            RatchetState::init_alice(x3dh_result.shared_secret, bob_public.signed_prekey_pub)?;
-
-        let session = Self {
+        let ratchet = RatchetState::init_alice(x3dh.shared_secret, theirs.signed_prekey_pub)?;
+        let mut session = Self {
             ratchet,
-            peer_identity_pub: bob_public.identity_pub,
+            peer_identity_pub: theirs.identity_pub,
         };
-
-        let initial_msg = InitialMessage {
-            alice_identity_pub: alice_keys.identity.public.to_bytes(),
-            alice_ephemeral_pub: x3dh_result.ephemeral_public,
-            opk_index,
-            ciphertext: Vec::new(),
-            header: None,
-        };
-
-        Ok((session, initial_msg))
+        let (header, ciphertext) = session.ratchet.encrypt(&[])?;
+        Ok((
+            session,
+            InitialMessage {
+                initiator_identity_pub: ours.identity_pub(),
+                ephemeral_pub: x3dh.ephemeral_public,
+                opk_id: theirs.one_time_prekey.map(|o| o.id),
+                header,
+                ciphertext,
+            },
+        ))
     }
 
-    /// Bob responds to Alice's InitialMessage.
-    ///
-    /// Performs X3DH from Bob's side, initializes the Double Ratchet.
+    /// Respond to an initial message. The one-time prekey it names is
+    /// removed from `ours` (single use), even if the response fails.
     pub fn respond(
-        bob_keys: &PeerPrivateKeys,
-        initial_msg: &InitialMessage,
+        ours: &mut PeerPrivateKeys,
+        init: &InitialMessage,
     ) -> Result<Self, SanctumError> {
-        // Which OPK did Alice use?
-        let opk = initial_msg
-            .opk_index
-            .and_then(|idx| bob_keys.one_time_prekeys.get(idx as usize));
-
-        // X3DH
-        let x3dh_result = x3dh::respond(
-            &bob_keys.identity,
-            &bob_keys.signed_prekey,
-            opk,
-            &initial_msg.alice_identity_pub,
-            &initial_msg.alice_ephemeral_pub,
+        let opk = match init.opk_id {
+            Some(id) => Some(ours.one_time_prekeys.remove(&id).ok_or_else(|| {
+                SanctumError::MalformedMessage("unknown or already used one-time prekey".into())
+            })?),
+            None => None,
+        };
+        let x3dh = x3dh::respond(
+            &ours.identity,
+            &ours.signed_prekey,
+            opk.as_ref(),
+            &init.initiator_identity_pub,
+            &init.ephemeral_pub,
         )?;
-
-        // Initialize Double Ratchet (Bob side)
         let ratchet = RatchetState::init_bob(
-            x3dh_result.shared_secret,
-            bob_keys.signed_prekey.secret.to_bytes().to_vec(),
-            bob_keys.signed_prekey.public.to_bytes(),
+            x3dh.shared_secret,
+            ours.signed_prekey.secret.to_bytes().to_vec(),
+            ours.signed_prekey.public.to_bytes(),
         );
-
-        Ok(Self {
+        let mut session = Self {
             ratchet,
-            peer_identity_pub: initial_msg.alice_identity_pub,
-        })
+            peer_identity_pub: init.initiator_identity_pub,
+        };
+        // Authenticates the exchange and gives Bob a sending chain.
+        session.ratchet.decrypt(&init.header, &init.ciphertext)?;
+        Ok(session)
     }
 
     /// Encrypt a plaintext message.
-    ///
-    /// Returns the ratchet header and the ciphertext.
-    /// The header must be sent alongside the ciphertext (it's not secret).
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(Header, Vec<u8>), SanctumError> {
         self.ratchet.encrypt(plaintext)
     }
@@ -170,7 +196,7 @@ impl E2eSession {
         self.ratchet.decrypt(header, ciphertext)
     }
 
-    /// Get the peer's identity public key.
+    /// Peer's X25519 identity key.
     pub fn peer_identity_pub(&self) -> &[u8; 32] {
         &self.peer_identity_pub
     }
@@ -182,126 +208,97 @@ mod tests {
 
     fn setup_pair() -> (E2eSession, E2eSession) {
         let alice_keys = PeerPrivateKeys::generate(3);
-        let bob_keys = PeerPrivateKeys::generate(3);
-        let bob_public = bob_keys.public_keys();
-
-        let (alice_session, initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
-        let bob_session = E2eSession::respond(&bob_keys, &initial_msg).unwrap();
-
-        (alice_session, bob_session)
+        let mut bob_keys = PeerPrivateKeys::generate(3);
+        let opk = bob_keys.one_time_prekeys()[0];
+        let (alice, init) =
+            E2eSession::initiate(&alice_keys, &bob_keys.public_keys(Some(opk))).unwrap();
+        let bob = E2eSession::respond(&mut bob_keys, &init).unwrap();
+        (alice, bob)
     }
 
     #[test]
-    fn e2e_round_trip() {
+    fn e2e_round_trip_both_directions_immediately() {
         let (mut alice, mut bob) = setup_pair();
-
-        let (header, ct) = alice.encrypt(b"Hello Bob!").unwrap();
-        let pt = bob.decrypt(&header, &ct).unwrap();
-        assert_eq!(pt, b"Hello Bob!");
-    }
-
-    #[test]
-    fn e2e_bidirectional() {
-        let (mut alice, mut bob) = setup_pair();
-
-        // Alice → Bob
-        let (h, ct) = alice.encrypt(b"Hey Bob").unwrap();
-        let pt = bob.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"Hey Bob");
-
-        // Bob → Alice
+        // Bob can answer before Alice sent any real message.
         let (h, ct) = bob.encrypt(b"Hey Alice").unwrap();
-        let pt = alice.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"Hey Alice");
-
-        // Alice → Bob again (ratchet advances)
-        let (h, ct) = alice.encrypt(b"What's up?").unwrap();
-        let pt = bob.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"What's up?");
+        assert_eq!(alice.decrypt(&h, &ct).unwrap(), b"Hey Alice");
+        let (h, ct) = alice.encrypt(b"Hello Bob!").unwrap();
+        assert_eq!(bob.decrypt(&h, &ct).unwrap(), b"Hello Bob!");
     }
 
     #[test]
-    fn e2e_multiple_messages() {
+    fn e2e_multiple_messages_and_ratchet_steps() {
         let (mut alice, mut bob) = setup_pair();
-
         for i in 0..20 {
             let msg = format!("Message #{i}");
             let (h, ct) = alice.encrypt(msg.as_bytes()).unwrap();
-            let pt = bob.decrypt(&h, &ct).unwrap();
-            assert_eq!(pt, msg.as_bytes());
+            assert_eq!(bob.decrypt(&h, &ct).unwrap(), msg.as_bytes());
+            let (h, ct) = bob.encrypt(msg.as_bytes()).unwrap();
+            assert_eq!(alice.decrypt(&h, &ct).unwrap(), msg.as_bytes());
         }
     }
 
     #[test]
-    fn e2e_forward_secrecy() {
+    fn e2e_message_cannot_be_decrypted_twice() {
         let (mut alice, mut bob) = setup_pair();
-
-        // Send and receive
         let (h, ct) = alice.encrypt(b"secret").unwrap();
-        let _ = bob.decrypt(&h, &ct).unwrap();
-
-        // Same ciphertext cannot be decrypted again (key consumed)
-        let result = bob.decrypt(&h, &ct);
-        assert!(result.is_err());
+        bob.decrypt(&h, &ct).unwrap();
+        assert!(bob.decrypt(&h, &ct).is_err());
     }
 
     #[test]
     fn e2e_out_of_order() {
         let (mut alice, mut bob) = setup_pair();
-
         let (h1, ct1) = alice.encrypt(b"first").unwrap();
         let (h2, ct2) = alice.encrypt(b"second").unwrap();
         let (h3, ct3) = alice.encrypt(b"third").unwrap();
-
-        // Deliver out of order: 3, 1, 2
-        let pt3 = bob.decrypt(&h3, &ct3).unwrap();
-        assert_eq!(pt3, b"third");
-
-        let pt1 = bob.decrypt(&h1, &ct1).unwrap();
-        assert_eq!(pt1, b"first");
-
-        let pt2 = bob.decrypt(&h2, &ct2).unwrap();
-        assert_eq!(pt2, b"second");
+        assert_eq!(bob.decrypt(&h3, &ct3).unwrap(), b"third");
+        assert_eq!(bob.decrypt(&h1, &ct1).unwrap(), b"first");
+        assert_eq!(bob.decrypt(&h2, &ct2).unwrap(), b"second");
     }
 
     #[test]
-    fn e2e_wrong_peer_cannot_decrypt() {
-        let alice_keys = PeerPrivateKeys::generate(3);
-        let bob_keys = PeerPrivateKeys::generate(3);
-        let eve_keys = PeerPrivateKeys::generate(3);
-        let bob_public = bob_keys.public_keys();
-
-        let (mut alice, _initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
-
-        // Alice encrypts for Bob
-        let (h, ct) = alice.encrypt(b"secret for Bob").unwrap();
-
-        // Eve tries to decrypt with her own session (different keys)
-        let eve_public = eve_keys.public_keys();
-        let (_, eve_initial) = E2eSession::initiate(&alice_keys, &eve_public).unwrap();
-        let mut eve = E2eSession::respond(&eve_keys, &eve_initial).unwrap();
-
-        let result = eve.decrypt(&h, &ct);
-        assert!(
-            result.is_err(),
-            "Eve should not be able to decrypt Bob's messages"
-        );
+    fn one_time_prekey_is_single_use() {
+        let alice_keys = PeerPrivateKeys::generate(0);
+        let mut bob_keys = PeerPrivateKeys::generate(2);
+        let opk = bob_keys.one_time_prekeys()[0];
+        let (_, init) =
+            E2eSession::initiate(&alice_keys, &bob_keys.public_keys(Some(opk))).unwrap();
+        E2eSession::respond(&mut bob_keys, &init).unwrap();
+        assert_eq!(bob_keys.opk_count(), 1);
+        // Replaying the same initial message fails: the OPK is gone.
+        assert!(E2eSession::respond(&mut bob_keys, &init).is_err());
     }
 
     #[test]
     fn e2e_without_opk() {
-        let alice_keys = PeerPrivateKeys::generate(0); // no OPKs
-        let bob_keys = PeerPrivateKeys::generate(0);
-        let bob_public = bob_keys.public_keys();
-        assert!(bob_public.one_time_prekeys.is_empty());
-
-        let (mut alice, initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
-        assert!(initial_msg.opk_index.is_none());
-
-        let mut bob = E2eSession::respond(&bob_keys, &initial_msg).unwrap();
-
+        let alice_keys = PeerPrivateKeys::generate(0);
+        let mut bob_keys = PeerPrivateKeys::generate(0);
+        let (mut alice, init) =
+            E2eSession::initiate(&alice_keys, &bob_keys.public_keys(None)).unwrap();
+        assert!(init.opk_id.is_none());
+        let mut bob = E2eSession::respond(&mut bob_keys, &init).unwrap();
         let (h, ct) = alice.encrypt(b"no OPK needed").unwrap();
-        let pt = bob.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"no OPK needed");
+        assert_eq!(bob.decrypt(&h, &ct).unwrap(), b"no OPK needed");
+    }
+
+    #[test]
+    fn wrong_responder_cannot_complete_the_exchange() {
+        let alice_keys = PeerPrivateKeys::generate(0);
+        let bob_keys = PeerPrivateKeys::generate(0);
+        let mut eve_keys = PeerPrivateKeys::generate(0);
+        let (_, init) = E2eSession::initiate(&alice_keys, &bob_keys.public_keys(None)).unwrap();
+        // The first ratchet message authenticates the shared secret.
+        assert!(E2eSession::respond(&mut eve_keys, &init).is_err());
+    }
+
+    #[test]
+    fn opk_ids_are_unique_and_refillable() {
+        let mut keys = PeerPrivateKeys::generate(3);
+        let more = keys.generate_opks(2);
+        let mut ids: Vec<u32> = keys.one_time_prekeys().iter().map(|o| o.id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 5);
+        assert!(more.iter().all(|o| o.id > 3));
     }
 }

@@ -23,13 +23,13 @@
 ---
 
 > [!WARNING]
-> **Actual state (v0.1.0-dev) — read before use.** The binary does **not** yet deliver the guarantees described below:
-> - **No end-to-end encryption yet.** Messages are refused unless you pass `--insecure-plaintext`, in which case **the host reads everything**. Real E2E (X3DH + Double Ratchet between members) lands in v0.1.1.
-> - **Authentication is not proven yet.** The host trusts the fingerprint a client declares; invitations are not signed.
+> **Actual state (v0.1.0-dev) — read before use.** Being fixed by the v0.1.1 correction plan:
+> - Messages are end-to-end encrypted (X3DH + Double Ratchet, one pairwise session per member) and members are admitted only with an owner-signed invitation. The crypto hardening phase (associated data, transactional ratchet, KAT vectors) and the external audit are **not done yet**.
 > - **Ephemeral mode only.** Persistent mode (encrypted storage, stable `.onion`) is not implemented and is refused by the CLI.
 > - Identities are native **Ed25519** keys, not PGP keys.
+> - The host still sees metadata: who is in the room, when and to whom each (padded) message is sent.
 >
-> Progress is tracked in the v0.1.1 correction plan. This notice is removed when the guarantees are verified by tests.
+> This notice is removed when the remaining guarantees are verified by tests.
 
 Sanctum is a terminal-first, Tor-only secure chat tool built in Rust. It provides end-to-end encrypted messaging over Tor Hidden Services with zero reliance on clearnet infrastructure, central servers, or trusted third parties.
 
