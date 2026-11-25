@@ -155,7 +155,11 @@ fn main() {
     });
 
     if let Err(e) = result {
-        eprintln!("[sanctum] error: {e}");
+        // Errors can embed remote strings (e.g. AuthResult.error_message).
+        eprintln!(
+            "[sanctum] error: {}",
+            sanctum_app::sanitize::sanitize_for_terminal(&e.to_string())
+        );
         std::process::exit(1);
     }
 }

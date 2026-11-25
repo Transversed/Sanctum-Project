@@ -2,6 +2,7 @@
 
 use crate::commands::chat_loop;
 use crate::config::Config;
+use sanctum_app::sanitize::sanitize_for_terminal;
 use sanctum_infra::client_connector;
 use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::identity_pgp::IdentityAdapter;
@@ -27,7 +28,11 @@ pub async fn run(
     let invite = invite_codec::decode_invite(token)?;
 
     println!("[sanctum] room: {}", invite.room_id);
-    println!("[sanctum] host: {}:{}", invite.onion_address, invite.port);
+    println!(
+        "[sanctum] host: {}:{}",
+        sanitize_for_terminal(&invite.onion_address),
+        invite.port
+    );
     println!("[sanctum] role: {:?}", invite.role);
 
     // Validate: is this token for us?
@@ -62,7 +67,10 @@ pub async fn run(
             .await?
     };
 
-    println!("[sanctum] authenticated (Noise OK, role: {})", session.role);
+    println!(
+        "[sanctum] authenticated (Noise OK, role: {})",
+        sanitize_for_terminal(&session.role)
+    );
 
     if no_chat {
         println!("[sanctum] joined (no-chat mode)");
