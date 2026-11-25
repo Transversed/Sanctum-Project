@@ -1,0 +1,76 @@
+# Changelog
+
+All notable changes to Sanctum. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[Semantic Versioning](https://semver.org/).
+
+## [0.1.1] — 2026-11-25 — "Make it true"
+
+This release makes the binary deliver what the README promised. It closes every
+finding of the internal review of v0.1.0 (C1–C5 critical, plus the high and medium
+findings). **Protocol v2, not compatible with v0.1.0.**
+
+### Security
+
+- **Real end-to-end encryption (C1, C4).** Members exchange Ed25519-signed prekey
+  bundles through the host and establish one X3DH + Double Ratchet session per
+  pair; each message is sent as one padded envelope per recipient. The host never
+  holds a decryption key (verified by `host_is_blind` on the real binary). There is
+  no plaintext mode any more.
+- **Proven admission (C2).** Channel-bound Ed25519 challenge-response (signature
+  over the Noise handshake hash); the host derives fingerprints from keys; newcomers
+  need an owner-signed, single-use, expiring invitation bound to the room, the host
+  session and their fingerprint. Unconditional auto-admission is gone.
+- **Sender authenticity (C3).** The host stamps the authenticated sender on every
+  routed frame.
+- **Terminal injection (C5).** All remote text is sanitized (C0/C1 controls, ESC,
+  BiDi); the host restricts aliases to `[A-Za-z0-9_-]{1,20}`.
+- **Double Ratchet hardened** to the Signal specification: header and identities as
+  associated data, transactional decryption, global bound on skipped keys, HMAC
+  chain KDF; X3DH with the `0xFF³²` prefix and low-order key rejection.
+  Known-answer vectors from an independent Python implementation.
+- **Identity key encrypted at rest** (Argon2id + ChaCha20-Poly1305), private files
+  created 0600 atomically. `identity import` (which derived a key from public PGP
+  bytes) is disabled; `identity protect` migrates old plaintext keys.
+- **Tor control port** authenticated with SAFECOOKIE only.
+- **Resource limits**: handshake timeout, idle timeout, connection cap, global
+  authentication failure budget.
+- **No disk writes** while hosting or chatting (the `/tmp` key handoff is gone),
+  enforced in CI with `strace`.
+- Join refuses any non-`.onion` address (no clearnet).
+- Dependencies: `rand` 0.8.8, `tokio` 1.54, `rusqlite` 0.41 (RUSTSEC-2026-0097,
+  -0386, -0459).
+
+### Added
+
+- Chat commands `/invite`, `/verify` (safety numbers), `/who`, `/help`.
+- Scriptable chat when stdin is not a terminal; keepalive pings.
+- `CONTRIBUTING.md` (workflow, invariants I1–I5), `ROADMAP.md`, protocol v2
+  specification, rewritten threat model and architecture documents.
+- CI: build with `protoc`, fmt, clippy `-D warnings`, MSRV 1.89, tests,
+  `cargo-deny`, unsafe ban, metadata-free logging check, zero-disk check, KAT
+  reproducibility, fuzz targets (nightly fuzzing).
+
+### Changed
+
+- Identities are Ed25519 (the "PGP" vocabulary is gone).
+- Logs go to stderr at `warn` level and never contain fingerprints, aliases,
+  addresses or content.
+- MSRV is 1.89; `license = "AGPL-3.0-only"`.
+
+### Removed
+
+- `--insecure-plaintext`, the `chat_demo` example, protobuf `HandshakeInit` /
+  `HandshakeResp` and `RequestBundle`.
+- Commands that only pretended to work (`chat`, `send`, `read`, `host status/stop`,
+  `room list/members/revoke`) now fail explicitly; `--mode persistent` is refused
+  until v0.2.
+
+## [0.1.0] — 2026-03-28
+
+Initial development snapshot (sprints 1–16): crate structure, Noise NK transport,
+Tor onion service, X3DH and Double Ratchet primitives, crossterm chat. End-to-end
+encryption and authenticated admission were not wired into the binary.
+
+[0.1.1]: https://github.com/Transversed/Sanctum-Project/releases/tag/v0.1.1
+[0.1.0]: https://github.com/Transversed/Sanctum-Project/commit/204eec9

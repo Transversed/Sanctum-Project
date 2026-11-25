@@ -1123,7 +1123,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "sanctum-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rand",
  "sanctum-domain",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "sanctum-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "clap",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "sanctum-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "sanctum-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "sanctum-infra"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "bytes",
