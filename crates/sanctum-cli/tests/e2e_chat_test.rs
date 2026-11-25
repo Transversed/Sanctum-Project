@@ -26,7 +26,12 @@ fn make_host_room() -> Room {
         Role::Owner,
         0,
     );
-    Room::new("e2e-test", RoomMode::Ephemeral, RoomConfig::default(), owner)
+    Room::new(
+        "e2e-test",
+        RoomMode::Ephemeral,
+        RoomConfig::default(),
+        owner,
+    )
 }
 
 fn free_port() -> u16 {
@@ -34,7 +39,12 @@ fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
-fn build_room_msg(sender_fp: &str, seq: u64, header: Option<Header>, ciphertext: Vec<u8>) -> WireMessage {
+fn build_room_msg(
+    sender_fp: &str,
+    seq: u64,
+    header: Option<Header>,
+    ciphertext: Vec<u8>,
+) -> WireMessage {
     WireMessage::RoomMessage(pb::RoomMessage {
         sender_fingerprint: sender_fp.to_string(),
         sequence_number: seq,
@@ -52,7 +62,11 @@ fn build_room_msg(sender_fp: &str, seq: u64, header: Option<Header>, ciphertext:
 fn decode_ratchet_header(rh: pb::RatchetHeader) -> Header {
     let mut pk = [0u8; 32];
     pk.copy_from_slice(&rh.dh_public);
-    Header { dh_public: pk, prev_chain_len: rh.previous_chain_length, msg_num: rh.message_number }
+    Header {
+        dh_public: pk,
+        prev_chain_len: rh.previous_chain_length,
+        msg_num: rh.message_number,
+    }
 }
 
 #[tokio::test]
@@ -73,7 +87,9 @@ async fn two_clients_exchange_e2e_messages() {
         noise_priv,
         shutdown.clone(),
     );
-    tokio::spawn(async move { let _ = listener.run().await; });
+    tokio::spawn(async move {
+        let _ = listener.run().await;
+    });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Connect Alice
@@ -119,10 +135,8 @@ async fn two_clients_exchange_e2e_messages() {
 
     // Alice sends InitialMessage to Bob via the host (opaque ciphertext to host)
     let init_bytes = serde_json::to_vec(&initial_msg).unwrap();
-    let frame = proto_codec::proto_encode(&build_room_msg(
-        alice_fp.as_str(), 1, None, init_bytes,
-    ))
-    .unwrap();
+    let frame =
+        proto_codec::proto_encode(&build_room_msg(alice_fp.as_str(), 1, None, init_bytes)).unwrap();
     alice.transport.send_frame(&frame).await.unwrap();
 
     // Bob receives the InitialMessage and derives the session
@@ -141,10 +155,8 @@ async fn two_clients_exchange_e2e_messages() {
     // ── Alice → Bob ──
     let plaintext_ab = b"Hello Bob from Alice!";
     let (h, ct) = alice_e2e.encrypt(plaintext_ab).unwrap();
-    let frame = proto_codec::proto_encode(&build_room_msg(
-        alice_fp.as_str(), 2, Some(h), ct,
-    ))
-    .unwrap();
+    let frame =
+        proto_codec::proto_encode(&build_room_msg(alice_fp.as_str(), 2, Some(h), ct)).unwrap();
     alice.transport.send_frame(&frame).await.unwrap();
 
     let frame = timeout(Duration::from_secs(5), bob.transport.recv_frame())
@@ -157,15 +169,16 @@ async fn two_clients_exchange_e2e_messages() {
     };
     let hdr = decode_ratchet_header(msg.ratchet_header.unwrap());
     let decrypted = bob_e2e.decrypt(&hdr, &msg.ciphertext).unwrap();
-    assert_eq!(decrypted, plaintext_ab, "Bob failed to decrypt Alice's message");
+    assert_eq!(
+        decrypted, plaintext_ab,
+        "Bob failed to decrypt Alice's message"
+    );
 
     // ── Bob → Alice ──
     let plaintext_ba = b"Hello Alice from Bob!";
     let (h, ct) = bob_e2e.encrypt(plaintext_ba).unwrap();
-    let frame = proto_codec::proto_encode(&build_room_msg(
-        bob_fp.as_str(), 1, Some(h), ct,
-    ))
-    .unwrap();
+    let frame =
+        proto_codec::proto_encode(&build_room_msg(bob_fp.as_str(), 1, Some(h), ct)).unwrap();
     bob.transport.send_frame(&frame).await.unwrap();
 
     let frame = timeout(Duration::from_secs(5), alice.transport.recv_frame())
@@ -178,7 +191,10 @@ async fn two_clients_exchange_e2e_messages() {
     };
     let hdr = decode_ratchet_header(msg.ratchet_header.unwrap());
     let decrypted = alice_e2e.decrypt(&hdr, &msg.ciphertext).unwrap();
-    assert_eq!(decrypted, plaintext_ba, "Alice failed to decrypt Bob's reply");
+    assert_eq!(
+        decrypted, plaintext_ba,
+        "Alice failed to decrypt Bob's reply"
+    );
 
     shutdown.cancel();
 }
@@ -201,7 +217,9 @@ async fn multiple_messages_forward_secrecy() {
         noise_priv,
         shutdown.clone(),
     );
-    tokio::spawn(async move { let _ = listener.run().await; });
+    tokio::spawn(async move {
+        let _ = listener.run().await;
+    });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let alice_fp = Fingerprint::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();

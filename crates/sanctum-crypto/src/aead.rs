@@ -48,7 +48,13 @@ pub fn encrypt(
                 .map_err(|_| SanctumError::MalformedMessage("invalid AES key".into()))?;
             let nonce = AesNonce::from_slice(nonce);
             cipher
-                .encrypt(nonce, aes_gcm::aead::Payload { msg: plaintext, aad })
+                .encrypt(
+                    nonce,
+                    aes_gcm::aead::Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|_| SanctumError::DecryptionFailed)
         }
         AeadCipher::ChaCha20Poly1305 => {
@@ -58,7 +64,10 @@ pub fn encrypt(
             cipher
                 .encrypt(
                     nonce,
-                    chacha20poly1305::aead::Payload { msg: plaintext, aad },
+                    chacha20poly1305::aead::Payload {
+                        msg: plaintext,
+                        aad,
+                    },
                 )
                 .map_err(|_| SanctumError::DecryptionFailed)
         }
@@ -93,7 +102,13 @@ pub fn decrypt(
                 .map_err(|_| SanctumError::MalformedMessage("invalid AES key".into()))?;
             let nonce = AesNonce::from_slice(nonce);
             cipher
-                .decrypt(nonce, aes_gcm::aead::Payload { msg: ciphertext, aad })
+                .decrypt(
+                    nonce,
+                    aes_gcm::aead::Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|_| SanctumError::DecryptionFailed)
         }
         AeadCipher::ChaCha20Poly1305 => {
@@ -103,7 +118,10 @@ pub fn decrypt(
             cipher
                 .decrypt(
                     nonce,
-                    chacha20poly1305::aead::Payload { msg: ciphertext, aad },
+                    chacha20poly1305::aead::Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
                 )
                 .map_err(|_| SanctumError::DecryptionFailed)
         }

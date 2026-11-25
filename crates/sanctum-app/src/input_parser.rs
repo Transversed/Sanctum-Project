@@ -23,7 +23,10 @@ pub enum SlashCommand {
     /// List connected members.
     Members,
     /// Invite a user: /invite <fingerprint> [role]
-    Invite { fingerprint: String, role: Option<String> },
+    Invite {
+        fingerprint: String,
+        role: Option<String>,
+    },
     /// Kick a user: /kick <fingerprint>
     Kick { fingerprint: String },
     /// Change alias: /alias <new_alias>
@@ -90,7 +93,10 @@ mod tests {
 
     #[test]
     fn parse_regular_message() {
-        assert_eq!(parse_input("Hello world"), Input::Message("Hello world".into()));
+        assert_eq!(
+            parse_input("Hello world"),
+            Input::Message("Hello world".into())
+        );
     }
 
     #[test]
@@ -130,7 +136,10 @@ mod tests {
 
     #[test]
     fn parse_members() {
-        assert_eq!(parse_input("/members"), Input::Command(SlashCommand::Members));
+        assert_eq!(
+            parse_input("/members"),
+            Input::Command(SlashCommand::Members)
+        );
         assert_eq!(parse_input("/who"), Input::Command(SlashCommand::Members));
     }
 

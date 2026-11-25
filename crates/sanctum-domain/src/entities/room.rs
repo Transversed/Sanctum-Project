@@ -115,12 +115,7 @@ pub struct Room {
 
 impl Room {
     /// Create a new room with a mandatory owner.
-    pub fn new(
-        name: impl Into<String>,
-        mode: RoomMode,
-        config: RoomConfig,
-        owner: Member,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, mode: RoomMode, config: RoomConfig, owner: Member) -> Self {
         debug_assert_eq!(owner.role(), Role::Owner);
         Self {
             id: RoomId::new(),
@@ -263,7 +258,12 @@ mod tests {
 
     #[test]
     fn room_add_and_reject_duplicate() {
-        let mut room = Room::new("t", RoomMode::Ephemeral, RoomConfig::default(), make_member("AA", Role::Owner));
+        let mut room = Room::new(
+            "t",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            make_member("AA", Role::Owner),
+        );
         room.add_member(make_member("BB", Role::Member)).unwrap();
         assert_eq!(room.active_member_count(), 2);
         assert!(room.add_member(make_member("BB", Role::Member)).is_err());
@@ -271,8 +271,16 @@ mod tests {
 
     #[test]
     fn room_full() {
-        let config = RoomConfig { max_members: 2, ..Default::default() };
-        let mut room = Room::new("t", RoomMode::Ephemeral, config, make_member("AA", Role::Owner));
+        let config = RoomConfig {
+            max_members: 2,
+            ..Default::default()
+        };
+        let mut room = Room::new(
+            "t",
+            RoomMode::Ephemeral,
+            config,
+            make_member("AA", Role::Owner),
+        );
         room.add_member(make_member("BB", Role::Member)).unwrap();
         assert!(room.is_full());
         assert!(room.add_member(make_member("CC", Role::Member)).is_err());
@@ -280,7 +288,12 @@ mod tests {
 
     #[test]
     fn room_revoke() {
-        let mut room = Room::new("t", RoomMode::Ephemeral, RoomConfig::default(), make_member("AA", Role::Owner));
+        let mut room = Room::new(
+            "t",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            make_member("AA", Role::Owner),
+        );
         room.add_member(make_member("BB", Role::Member)).unwrap();
         room.revoke_member(&make_fp("BB")).unwrap();
         assert!(!room.is_authorized(&make_fp("BB")));
@@ -288,7 +301,12 @@ mod tests {
 
     #[test]
     fn room_cannot_revoke_owner() {
-        let mut room = Room::new("t", RoomMode::Ephemeral, RoomConfig::default(), make_member("AA", Role::Owner));
+        let mut room = Room::new(
+            "t",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            make_member("AA", Role::Owner),
+        );
         assert!(room.revoke_member(&make_fp("AA")).is_err());
     }
 

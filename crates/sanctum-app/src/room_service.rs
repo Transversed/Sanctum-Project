@@ -28,7 +28,13 @@ impl RoomService {
         owner_identity_key: Vec<u8>,
         owner_alias: DisplayAlias,
     ) -> Result<&Room, SanctumError> {
-        let owner = Member::new(owner_fingerprint, owner_identity_key, owner_alias, Role::Owner, now());
+        let owner = Member::new(
+            owner_fingerprint,
+            owner_identity_key,
+            owner_alias,
+            Role::Owner,
+            now(),
+        );
         let mut validated_config = config;
         validated_config.validate();
         let room = Room::new(name, mode, validated_config, owner);
@@ -43,16 +49,16 @@ impl RoomService {
 
     /// Get a reference to the current room.
     pub fn room(&self) -> Result<&Room, SanctumError> {
-        self.room.as_ref().ok_or_else(|| {
-            SanctumError::RoomNotFound(RoomId::new())
-        })
+        self.room
+            .as_ref()
+            .ok_or_else(|| SanctumError::RoomNotFound(RoomId::new()))
     }
 
     /// Get a mutable reference to the current room.
     pub fn room_mut(&mut self) -> Result<&mut Room, SanctumError> {
-        self.room.as_mut().ok_or_else(|| {
-            SanctumError::RoomNotFound(RoomId::new())
-        })
+        self.room
+            .as_mut()
+            .ok_or_else(|| SanctumError::RoomNotFound(RoomId::new()))
     }
 
     /// Add a member to the room. Requires the caller to have invite permissions.
@@ -223,27 +229,51 @@ mod tests {
     #[test]
     fn add_member_by_owner() {
         let (mut svc, owner_fp) = make_svc_with_room();
-        svc.add_member(&owner_fp, fp("BB"), vec![0u8; 32], alias("bob"), Role::Member)
-            .unwrap();
+        svc.add_member(
+            &owner_fp,
+            fp("BB"),
+            vec![0u8; 32],
+            alias("bob"),
+            Role::Member,
+        )
+        .unwrap();
         assert_eq!(svc.room().unwrap().active_member_count(), 2);
     }
 
     #[test]
     fn add_member_by_regular_fails() {
         let (mut svc, owner_fp) = make_svc_with_room();
-        svc.add_member(&owner_fp, fp("BB"), vec![0u8; 32], alias("bob"), Role::Member)
-            .unwrap();
+        svc.add_member(
+            &owner_fp,
+            fp("BB"),
+            vec![0u8; 32],
+            alias("bob"),
+            Role::Member,
+        )
+        .unwrap();
 
         // BB (Member) tries to add CC
-        let result = svc.add_member(&fp("BB"), fp("CC"), vec![0u8; 32], alias("charlie"), Role::Member);
+        let result = svc.add_member(
+            &fp("BB"),
+            fp("CC"),
+            vec![0u8; 32],
+            alias("charlie"),
+            Role::Member,
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn revoke_member() {
         let (mut svc, owner_fp) = make_svc_with_room();
-        svc.add_member(&owner_fp, fp("BB"), vec![0u8; 32], alias("bob"), Role::Member)
-            .unwrap();
+        svc.add_member(
+            &owner_fp,
+            fp("BB"),
+            vec![0u8; 32],
+            alias("bob"),
+            Role::Member,
+        )
+        .unwrap();
         svc.revoke_member(&owner_fp, &fp("BB")).unwrap();
         assert!(!svc.is_authorized(&fp("BB")));
     }
@@ -251,10 +281,22 @@ mod tests {
     #[test]
     fn revoke_by_member_fails() {
         let (mut svc, owner_fp) = make_svc_with_room();
-        svc.add_member(&owner_fp, fp("BB"), vec![0u8; 32], alias("bob"), Role::Member)
-            .unwrap();
-        svc.add_member(&owner_fp, fp("CC"), vec![0u8; 32], alias("charlie"), Role::Member)
-            .unwrap();
+        svc.add_member(
+            &owner_fp,
+            fp("BB"),
+            vec![0u8; 32],
+            alias("bob"),
+            Role::Member,
+        )
+        .unwrap();
+        svc.add_member(
+            &owner_fp,
+            fp("CC"),
+            vec![0u8; 32],
+            alias("charlie"),
+            Role::Member,
+        )
+        .unwrap();
 
         let result = svc.revoke_member(&fp("BB"), &fp("CC"));
         assert!(result.is_err());

@@ -73,9 +73,9 @@ impl HostService {
         };
         self.connected_clients.insert(fingerprint.clone(), client);
 
-        let _ = self.event_tx.send(SanctumEvent::ClientConnected {
-            fingerprint,
-        });
+        let _ = self
+            .event_tx
+            .send(SanctumEvent::ClientConnected { fingerprint });
 
         Ok(())
     }
@@ -97,10 +97,7 @@ impl HostService {
 
     /// Determine where to route a message. Returns the fingerprints of
     /// all connected, ready clients in the room except the sender.
-    pub fn route_recipients(
-        &self,
-        sender: &Fingerprint,
-    ) -> Vec<Fingerprint> {
+    pub fn route_recipients(&self, sender: &Fingerprint) -> Vec<Fingerprint> {
         self.connected_clients
             .iter()
             .filter(|(fp, client)| *fp != sender && client.ready)
@@ -120,7 +117,9 @@ impl HostService {
 
     /// Get the connection_id for a fingerprint.
     pub fn connection_id_for(&self, fingerprint: &Fingerprint) -> Option<u64> {
-        self.connected_clients.get(fingerprint).map(|c| c.connection_id)
+        self.connected_clients
+            .get(fingerprint)
+            .map(|c| c.connection_id)
     }
 
     /// Emit a message received event.

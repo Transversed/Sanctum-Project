@@ -4,10 +4,10 @@
 //! The client signs it with PGP. The host verifies the signature and
 //! checks the fingerprint against the room's allowlist.
 
-use sanctum_domain::errors::SanctumError;
 use sanctum_domain::entities::member::Fingerprint;
 use sanctum_domain::entities::room::RoomId;
-use sha2::{Sha256, Digest};
+use sanctum_domain::errors::SanctumError;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,11 +57,7 @@ impl AuthService {
     }
 
     /// Generate a challenge for a connecting client.
-    pub fn create_challenge(
-        &self,
-        room_id: &RoomId,
-        host_noise_pubkey: &[u8],
-    ) -> AuthChallenge {
+    pub fn create_challenge(&self, room_id: &RoomId, host_noise_pubkey: &[u8]) -> AuthChallenge {
         let mut nonce = vec![0u8; CHALLENGE_NONCE_LEN];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
 
@@ -276,7 +272,8 @@ mod tests {
             display_alias: "alice".into(),
         };
 
-        svc.verify_response(&challenge, &response, &authorized).unwrap();
+        svc.verify_response(&challenge, &response, &authorized)
+            .unwrap();
         // Same nonce again
         let result = svc.verify_response(&challenge, &response, &authorized);
         assert!(result.is_err());

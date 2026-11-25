@@ -251,8 +251,7 @@ mod tests {
 
     #[test]
     fn fingerprint_strips_spaces() {
-        let fp =
-            Fingerprint::new("4A7B 3C2D 8E9F 1A0B 5C6D 7E8F 9A0B 1C2D 3E4F 5A6B").unwrap();
+        let fp = Fingerprint::new("4A7B 3C2D 8E9F 1A0B 5C6D 7E8F 9A0B 1C2D 3E4F 5A6B").unwrap();
         assert_eq!(fp.as_str().len(), 40);
     }
 

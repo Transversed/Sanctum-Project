@@ -16,9 +16,8 @@ pub async fn run(
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load our real identity
-    let identity = IdentityAdapter::load_from_disk().map_err(|e| {
-        format!("{e}\nRun `sanctum init --alias <n>` first.")
-    })?;
+    let identity = IdentityAdapter::load_from_disk()
+        .map_err(|e| format!("{e}\nRun `sanctum init --alias <n>` first."))?;
     let local_fp = identity.fingerprint().clone();
     let alias = config.identity.alias.clone();
     println!("[sanctum] identity: {} ({})", alias, local_fp.short());
@@ -39,8 +38,7 @@ pub async fn run(
     let e2e_keys = PeerPrivateKeys::generate(5);
 
     // Connect
-    let is_local = invite.onion_address == "localhost"
-        || invite.onion_address.starts_with("127.");
+    let is_local = invite.onion_address == "localhost" || invite.onion_address.starts_with("127.");
 
     let session = if !is_local && invite.onion_address.ends_with(".onion") {
         println!("[sanctum] connecting via Tor (may take 10-30s)...");
@@ -49,15 +47,19 @@ pub async fn run(
             ..TorConfig::default()
         };
         client_connector::connect_via_tor_and_auth(
-            &tc.socks_addr, &invite.onion_address, invite.port,
-            &local_fp, &alias, &invite.host_noise_pubkey,
-        ).await?
+            &tc.socks_addr,
+            &invite.onion_address,
+            invite.port,
+            &local_fp,
+            &alias,
+            &invite.host_noise_pubkey,
+        )
+        .await?
     } else {
         let addr = format!("{}:{}", invite.onion_address, invite.port);
         println!("[sanctum] connecting to {addr}...");
-        client_connector::connect_and_auth(
-            &addr, &local_fp, &alias, &invite.host_noise_pubkey,
-        ).await?
+        client_connector::connect_and_auth(&addr, &local_fp, &alias, &invite.host_noise_pubkey)
+            .await?
     };
 
     println!("[sanctum] authenticated (Noise OK, role: {})", session.role);
@@ -70,7 +72,15 @@ pub async fn run(
     println!("[sanctum] type messages or /exit to quit");
     println!("──────────────────────────────────────────────");
 
-    chat_loop::run(session.transport, local_fp, alias, Some(e2e_keys), false, shutdown).await;
+    chat_loop::run(
+        session.transport,
+        local_fp,
+        alias,
+        Some(e2e_keys),
+        false,
+        shutdown,
+    )
+    .await;
 
     println!("[sanctum] goodbye.");
     Ok(())

@@ -6,8 +6,10 @@ use crate::errors::SanctumError;
 /// PGP identity port.
 pub trait IdentityPort: Send + Sync {
     /// Sign data with local PGP key. Returns detached signature.
-    fn sign(&self, data: &[u8])
-        -> impl std::future::Future<Output = Result<Vec<u8>, SanctumError>> + Send;
+    fn sign(
+        &self,
+        data: &[u8],
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, SanctumError>> + Send;
 
     /// Verify a PGP signature.
     fn verify(

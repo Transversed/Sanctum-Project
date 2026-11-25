@@ -84,13 +84,20 @@ async fn run_auth(
     let challenge_frame = transport.recv_frame().await?;
     if challenge_frame.message_type != message_types::AUTH_CHALLENGE {
         return Err(SanctumError::AuthFailed {
-            reason: format!("expected AuthChallenge, got 0x{:02X}", challenge_frame.message_type),
+            reason: format!(
+                "expected AuthChallenge, got 0x{:02X}",
+                challenge_frame.message_type
+            ),
         });
     }
 
     let challenge = match proto_codec::proto_decode(&challenge_frame)? {
         WireMessage::AuthChallenge(c) => c,
-        _ => return Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
+        _ => {
+            return Err(SanctumError::AuthFailed {
+                reason: "unexpected message".into(),
+            })
+        }
     };
 
     info!("[sanctum] auth challenge for room {}", challenge.room_id);
@@ -113,21 +120,28 @@ async fn run_auth(
         pgp_public_key: vec![],
         display_alias: display_alias.to_string(),
     });
-    transport.send_frame(&proto_codec::proto_encode(&response_msg)?).await?;
+    transport
+        .send_frame(&proto_codec::proto_encode(&response_msg)?)
+        .await?;
     info!("[sanctum] sent auth as {}", fingerprint.short());
 
     // Receive result
     let result_frame = transport.recv_frame().await?;
     if result_frame.message_type != message_types::AUTH_RESULT {
         return Err(SanctumError::AuthFailed {
-            reason: format!("expected AuthResult, got 0x{:02X}", result_frame.message_type),
+            reason: format!(
+                "expected AuthResult, got 0x{:02X}",
+                result_frame.message_type
+            ),
         });
     }
 
     match proto_codec::proto_decode(&result_frame)? {
         WireMessage::AuthResult(r) => {
             if !r.success {
-                return Err(SanctumError::AuthFailed { reason: r.error_message });
+                return Err(SanctumError::AuthFailed {
+                    reason: r.error_message,
+                });
             }
             info!("[sanctum] authenticated (role: {})", r.member_role);
             Ok(ConnectedSession {
@@ -137,6 +151,8 @@ async fn run_auth(
                 role: r.member_role,
             })
         }
-        _ => Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
+        _ => Err(SanctumError::AuthFailed {
+            reason: "unexpected message".into(),
+        }),
     }
 }

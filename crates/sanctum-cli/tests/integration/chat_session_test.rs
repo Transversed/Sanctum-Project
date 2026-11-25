@@ -6,8 +6,8 @@ use sanctum_app::chat_session::{ChatSession, SessionConfig};
 use sanctum_app::input_parser::{parse_input, Input, SlashCommand};
 use sanctum_domain::entities::member::{Fingerprint, Role};
 use sanctum_domain::entities::room::{RoomId, RoomMode};
-use sanctum_domain::events::ChatEvent;
 use sanctum_domain::errors::SanctumError;
+use sanctum_domain::events::ChatEvent;
 use sanctum_domain::ports::ui::{StatusInfo, UiPort};
 
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,9 @@ struct MockUi {
 
 impl MockUi {
     fn new() -> Self {
-        Self { events: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
@@ -45,16 +47,27 @@ impl UiPort for MockUi {
         async { Err(SanctumError::ConnectionLost("mock".into())) }
     }
     fn print_message(&self, _role: &str, sender: &str, content: &str, _ts: u64) {
-        self.events.lock().unwrap().push(UiEvent::Message { sender: sender.into(), content: content.into() });
+        self.events.lock().unwrap().push(UiEvent::Message {
+            sender: sender.into(),
+            content: content.into(),
+        });
     }
     fn print_own_message(&self, _role: &str, _alias: &str, content: &str, _ts: u64) {
-        self.events.lock().unwrap().push(UiEvent::OwnMessage { content: content.into() });
+        self.events.lock().unwrap().push(UiEvent::OwnMessage {
+            content: content.into(),
+        });
     }
     fn print_system(&self, text: &str) {
-        self.events.lock().unwrap().push(UiEvent::System(text.into()));
+        self.events
+            .lock()
+            .unwrap()
+            .push(UiEvent::System(text.into()));
     }
     fn print_backlog_start(&self, count: u32) {
-        self.events.lock().unwrap().push(UiEvent::BacklogStart(count));
+        self.events
+            .lock()
+            .unwrap()
+            .push(UiEvent::BacklogStart(count));
     }
     fn print_backlog_end(&self) {
         self.events.lock().unwrap().push(UiEvent::BacklogEnd);
@@ -72,7 +85,13 @@ impl UiPort for MockUi {
     }
 }
 
-fn make_session(ui: MockUi) -> (ChatSession<MockUi>, broadcast::Sender<ChatEvent>, CancellationToken) {
+fn make_session(
+    ui: MockUi,
+) -> (
+    ChatSession<MockUi>,
+    broadcast::Sender<ChatEvent>,
+    CancellationToken,
+) {
     let config = SessionConfig {
         room_id: RoomId::new(),
         room_name: "test-room".into(),
@@ -113,7 +132,10 @@ async fn emit_events_reach_subscribers() {
     let ui = MockUi::new();
     let (session, event_tx, _) = make_session(ui);
     let mut rx = event_tx.subscribe();
-    session.emit(ChatEvent::OutgoingMessage { content: "hello".into(), timestamp: 1234 });
+    session.emit(ChatEvent::OutgoingMessage {
+        content: "hello".into(),
+        timestamp: 1234,
+    });
     let event = rx.recv().await.unwrap();
     match event {
         ChatEvent::OutgoingMessage { content, .. } => assert_eq!(content, "hello"),
@@ -207,7 +229,9 @@ fn chat_events_for_tor_loss() {
         ChatEvent::TorStatusChanged { connected } => assert!(!connected),
         _ => panic!("wrong variant"),
     }
-    let event = ChatEvent::Disconnected { reason: "Tor connection lost".into() };
+    let event = ChatEvent::Disconnected {
+        reason: "Tor connection lost".into(),
+    };
     match event {
         ChatEvent::Disconnected { reason } => assert!(reason.contains("Tor")),
         _ => panic!("wrong variant"),
@@ -222,7 +246,8 @@ async fn event_sequence_order_preserved() {
         room_id: RoomId::new(),
         role: Role::Owner,
         peer_count: 0,
-    }).unwrap();
+    })
+    .unwrap();
 
     tx.send(ChatEvent::IncomingMessage {
         sender: fp("BB"),
@@ -230,12 +255,14 @@ async fn event_sequence_order_preserved() {
         content: "hello".into(),
         timestamp: 1000,
         seq: 1,
-    }).unwrap();
+    })
+    .unwrap();
 
     tx.send(ChatEvent::PeerLeft {
         fingerprint: fp("BB"),
         display: "bob".into(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let e1 = rx.recv().await.unwrap();
     let e2 = rx.recv().await.unwrap();

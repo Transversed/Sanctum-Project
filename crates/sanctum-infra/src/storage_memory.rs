@@ -51,7 +51,8 @@ impl MemoryStorageAdapter {
     pub fn delete_room(&mut self, id: &RoomId) -> Result<(), SanctumError> {
         let id_str = id.as_str();
         self.rooms.remove(&id_str);
-        self.messages.retain(|m| m.envelope.room_id().as_str() != id_str);
+        self.messages
+            .retain(|m| m.envelope.room_id().as_str() != id_str);
         Ok(())
     }
 
@@ -156,7 +157,13 @@ mod tests {
     }
 
     fn make_room() -> Room {
-        let owner = Member::new(fp("AA"), vec![0u8; 32], DisplayAlias::new("owner").unwrap(), Role::Owner, 0);
+        let owner = Member::new(
+            fp("AA"),
+            vec![0u8; 32],
+            DisplayAlias::new("owner").unwrap(),
+            Role::Owner,
+            0,
+        );
         Room::new("test", RoomMode::Ephemeral, RoomConfig::default(), owner)
     }
 
@@ -168,7 +175,11 @@ mod tests {
             vec![0u8; 12],
             1700000000,
             vec![1, 2, 3],
-            RatchetHeader { dh_public: vec![0u8; 32], previous_chain_length: 0, message_number: 0 },
+            RatchetHeader {
+                dh_public: vec![0u8; 32],
+                previous_chain_length: 0,
+                message_number: 0,
+            },
         )
     }
 
@@ -260,7 +271,9 @@ mod tests {
         let recipient = fp("BB");
 
         store.store_room(&room).unwrap();
-        store.store_message(&recipient, &make_envelope(&room, 1)).unwrap();
+        store
+            .store_message(&recipient, &make_envelope(&room, 1))
+            .unwrap();
 
         store.delete_room(room.id()).unwrap();
         assert!(store.load_room(room.id()).unwrap().is_none());

@@ -6,7 +6,6 @@
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
 use sanctum_domain::entities::room::RoomId;
 
-
 /// Client connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientState {
@@ -69,11 +68,7 @@ impl ClientService {
     }
 
     /// Transition to synchronizing state (PGP auth complete).
-    pub fn auth_complete(
-        &mut self,
-        identity: LocalIdentity,
-        room_id: RoomId,
-    ) {
+    pub fn auth_complete(&mut self, identity: LocalIdentity, room_id: RoomId) {
         self.local_identity = Some(identity);
         self.room_id = Some(room_id);
         self.state = ClientState::Synchronizing;

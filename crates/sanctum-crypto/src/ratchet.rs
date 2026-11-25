@@ -29,8 +29,8 @@ pub struct Header {
 #[derive(Serialize, Deserialize)]
 pub struct RatchetState {
     // DH ratchet
-    dh_self_secret: Vec<u8>,  // our current ratchet private key
-    dh_self_public: [u8; 32], // our current ratchet public key
+    dh_self_secret: Vec<u8>,     // our current ratchet private key
+    dh_self_public: [u8; 32],    // our current ratchet public key
     dh_remote: Option<[u8; 32]>, // their current ratchet public key
 
     // Root key (evolves at each DH ratchet step)
@@ -175,19 +175,24 @@ impl RatchetState {
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&nonce_bytes);
 
-        let ct = aead::encrypt(AeadCipher::ChaCha20Poly1305, &msg_key, &nonce, plaintext, b"")?;
+        let ct = aead::encrypt(
+            AeadCipher::ChaCha20Poly1305,
+            &msg_key,
+            &nonce,
+            plaintext,
+            b"",
+        )?;
 
         Ok((header, ct))
     }
 
     /// Decrypt a received message.
-    pub fn decrypt(
-        &mut self,
-        header: &Header,
-        ciphertext: &[u8],
-    ) -> Result<Vec<u8>, SanctumError> {
+    pub fn decrypt(&mut self, header: &Header, ciphertext: &[u8]) -> Result<Vec<u8>, SanctumError> {
         // Try skipped keys first (out-of-order message)
-        if let Some(mk) = self.skipped_keys.remove(&(header.dh_public, header.msg_num)) {
+        if let Some(mk) = self
+            .skipped_keys
+            .remove(&(header.dh_public, header.msg_num))
+        {
             let nonce_bytes = kdf::derive_subkey(&mk, b"", b"nonce", 12)?;
             let mut nonce = [0u8; 12];
             nonce.copy_from_slice(&nonce_bytes);
@@ -217,7 +222,13 @@ impl RatchetState {
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&nonce_bytes);
 
-        aead::decrypt(AeadCipher::ChaCha20Poly1305, &msg_key, &nonce, ciphertext, b"")
+        aead::decrypt(
+            AeadCipher::ChaCha20Poly1305,
+            &msg_key,
+            &nonce,
+            ciphertext,
+            b"",
+        )
     }
 
     /// Perform a DH ratchet step with a new remote public key.
@@ -269,8 +280,7 @@ impl RatchetState {
         let mut current_ck = *ck;
         while self.msg_num_recv < until {
             let (new_ck, mk) = kdf_ck(&current_ck)?;
-            self.skipped_keys
-                .insert((remote, self.msg_num_recv), mk);
+            self.skipped_keys.insert((remote, self.msg_num_recv), mk);
             current_ck = new_ck;
             self.msg_num_recv += 1;
         }
@@ -308,11 +318,8 @@ mod tests {
 
         assert_eq!(alice_x3dh.shared_secret, bob_x3dh.shared_secret);
 
-        let alice_ratchet = RatchetState::init_alice(
-            alice_x3dh.shared_secret,
-            bob_spk.public.to_bytes(),
-        )
-        .unwrap();
+        let alice_ratchet =
+            RatchetState::init_alice(alice_x3dh.shared_secret, bob_spk.public.to_bytes()).unwrap();
 
         let bob_ratchet = RatchetState::init_bob(
             bob_x3dh.shared_secret,

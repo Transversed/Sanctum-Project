@@ -40,32 +40,70 @@ pub enum HostAction {
 }
 
 pub async fn run(
-    action: HostAction, config: &Config, shutdown: CancellationToken,
+    action: HostAction,
+    config: &Config,
+    shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        HostAction::Create { name, mode, port, max_members, backlog_max, backlog_hours, chat, local } => {
-            run_create(&name, &mode, port, max_members, backlog_max, backlog_hours, chat, local, config, shutdown).await
+        HostAction::Create {
+            name,
+            mode,
+            port,
+            max_members,
+            backlog_max,
+            backlog_hours,
+            chat,
+            local,
+        } => {
+            run_create(
+                &name,
+                &mode,
+                port,
+                max_members,
+                backlog_max,
+                backlog_hours,
+                chat,
+                local,
+                config,
+                shutdown,
+            )
+            .await
         }
-        HostAction::Status => { println!("[sanctum] not implemented"); Ok(()) }
-        HostAction::Stop => { println!("[sanctum] stopping..."); Ok(()) }
+        HostAction::Status => {
+            println!("[sanctum] not implemented");
+            Ok(())
+        }
+        HostAction::Stop => {
+            println!("[sanctum] stopping...");
+            Ok(())
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_create(
-    name: &str, mode: &str, port: Option<u16>, max_members: u16,
-    backlog_max: u32, backlog_hours: u32, open_chat: bool, local: bool,
-    config: &Config, shutdown: CancellationToken,
+    name: &str,
+    mode: &str,
+    port: Option<u16>,
+    max_members: u16,
+    backlog_max: u32,
+    backlog_hours: u32,
+    open_chat: bool,
+    local: bool,
+    config: &Config,
+    shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load real identity
-    let identity = IdentityAdapter::load_from_disk().map_err(|e| {
-        format!("{e}\nRun `sanctum init --alias <name>` first.")
-    })?;
+    let identity = IdentityAdapter::load_from_disk()
+        .map_err(|e| format!("{e}\nRun `sanctum init --alias <name>` first."))?;
     let owner_fp = identity.fingerprint().clone();
     let alias = config.identity.alias.clone();
     println!("[sanctum] identity: {} ({})", alias, owner_fp.short());
 
-    let room_mode = match mode { "persistent" => RoomMode::Persistent, _ => RoomMode::Ephemeral };
+    let room_mode = match mode {
+        "persistent" => RoomMode::Persistent,
+        _ => RoomMode::Ephemeral,
+    };
     let listen_port = port.unwrap_or(config.host.listen_port);
 
     let mut room_config = RoomConfig {
@@ -85,10 +123,15 @@ async fn run_create(
 
     // Room
     let mut room_svc = RoomService::new();
-    let owner_alias = DisplayAlias::new(&alias).unwrap_or_else(|_| DisplayAlias::new("host").unwrap());
+    let owner_alias =
+        DisplayAlias::new(&alias).unwrap_or_else(|_| DisplayAlias::new("host").unwrap());
     room_svc.create_room(
-        name, room_mode, room_config,
-        owner_fp.clone(), identity.public_key_bytes(), owner_alias,
+        name,
+        room_mode,
+        room_config,
+        owner_fp.clone(),
+        identity.public_key_bytes(),
+        owner_alias,
     )?;
     let room = room_svc.room()?.clone();
     println!("[sanctum] room '{}' created ({})", room.name(), room_mode);
@@ -114,40 +157,63 @@ async fn run_create(
     };
 
     let hs = tor.create_hidden_service().await?;
-    if !local { println!("[sanctum] hidden service: {}:{}", hs.onion_address, hs.port); }
+    if !local {
+        println!("[sanctum] hidden service: {}:{}", hs.onion_address, hs.port);
+    }
     println!("[sanctum] relay on {bind_addr}");
 
     // Relay
     let (event_tx, _) = broadcast::channel::<SanctumEvent>(256);
     let host_svc = HostService::new(room.clone(), event_tx);
     let listener = HostListener::new(
-        bind_addr.clone(), host_svc, noise_pub.clone(), noise_priv.clone(), shutdown.clone(),
+        bind_addr.clone(),
+        host_svc,
+        noise_pub.clone(),
+        noise_priv.clone(),
+        shutdown.clone(),
     );
     let relay_handle = tokio::spawn(async move {
-        if let Err(e) = listener.run().await { eprintln!("[sanctum] relay: {e}"); }
+        if let Err(e) = listener.run().await {
+            eprintln!("[sanctum] relay: {e}");
+        }
     });
 
-    let onion_display = if local { "127.0.0.1".to_string() } else { hs.onion_address.clone() };
+    let onion_display = if local {
+        "127.0.0.1".to_string()
+    } else {
+        hs.onion_address.clone()
+    };
     println!();
     println!("[sanctum] your fingerprint (share with invitees):");
     println!("  {}", owner_fp.as_str());
     println!();
     println!("[sanctum] to invite someone:");
-    println!("  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {}",
-        onion_display, hs.port, room.id().as_str());
+    println!(
+        "  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {}",
+        onion_display,
+        hs.port,
+        room.id().as_str()
+    );
     println!();
 
     if open_chat {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        let session = client_connector::connect_and_auth(
-            &bind_addr, &owner_fp, &alias, &noise_pub,
-        ).await?;
+        let session =
+            client_connector::connect_and_auth(&bind_addr, &owner_fp, &alias, &noise_pub).await?;
 
         println!("[sanctum] connected as owner (Noise OK)");
         println!("[sanctum] type messages or /exit to quit");
         println!("──────────────────────────────────────────────");
 
-        chat_loop::run(session.transport, owner_fp, alias, Some(e2e_keys), true, shutdown.clone()).await;
+        chat_loop::run(
+            session.transport,
+            owner_fp,
+            alias,
+            Some(e2e_keys),
+            true,
+            shutdown.clone(),
+        )
+        .await;
     } else {
         println!("[sanctum] relay running. Ctrl-C to stop.");
         shutdown.cancelled().await;

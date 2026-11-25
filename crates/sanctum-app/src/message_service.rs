@@ -81,17 +81,17 @@ impl MessageService {
     }
 
     /// Process a received message: check anti-replay, return the envelope for decryption.
-    pub fn process_received(
-        &mut self,
-        envelope: &MessageEnvelope,
-    ) -> Result<(), SanctumError> {
+    pub fn process_received(&mut self, envelope: &MessageEnvelope) -> Result<(), SanctumError> {
         // Validate envelope
-        envelope.validate().map_err(|e| SanctumError::MalformedMessage(e.to_string()))?;
+        envelope
+            .validate()
+            .map_err(|e| SanctumError::MalformedMessage(e.to_string()))?;
 
         // Get or create session for the sender
         let sender = envelope.sender().clone();
         if !self.sessions.contains_key(&sender) {
-            self.sessions.insert(sender.clone(), Session::new(sender.clone()));
+            self.sessions
+                .insert(sender.clone(), Session::new(sender.clone()));
         }
 
         let session = self.sessions.get_mut(&sender).unwrap();
@@ -113,7 +113,11 @@ impl MessageService {
     }
 
     /// Unpad a decrypted message.
-    pub fn unpad_message(&self, padded: &[u8], crypto: &impl CryptoPort) -> Result<Vec<u8>, SanctumError> {
+    pub fn unpad_message(
+        &self,
+        padded: &[u8],
+        crypto: &impl CryptoPort,
+    ) -> Result<Vec<u8>, SanctumError> {
         crypto.unpad(padded)
     }
 
@@ -141,10 +145,22 @@ mod tests {
     struct MockCrypto;
 
     impl CryptoPort for MockCrypto {
-        fn encrypt(&self, _key: &[u8], _nonce: &[u8], plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+        fn encrypt(
+            &self,
+            _key: &[u8],
+            _nonce: &[u8],
+            plaintext: &[u8],
+            _aad: &[u8],
+        ) -> Result<Vec<u8>, SanctumError> {
             Ok(plaintext.to_vec())
         }
-        fn decrypt(&self, _key: &[u8], _nonce: &[u8], ciphertext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+        fn decrypt(
+            &self,
+            _key: &[u8],
+            _nonce: &[u8],
+            ciphertext: &[u8],
+            _aad: &[u8],
+        ) -> Result<Vec<u8>, SanctumError> {
             Ok(ciphertext.to_vec())
         }
         fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
@@ -164,7 +180,12 @@ mod tests {
             let len = u32::from_be_bytes([padded[0], padded[1], padded[2], padded[3]]) as usize;
             Ok(padded[4..4 + len].to_vec())
         }
-        fn derive_key(&self, master: &[u8], _info: &[u8], output_len: usize) -> Result<Vec<u8>, SanctumError> {
+        fn derive_key(
+            &self,
+            master: &[u8],
+            _info: &[u8],
+            output_len: usize,
+        ) -> Result<Vec<u8>, SanctumError> {
             let mut out = vec![0u8; output_len];
             for (i, byte) in out.iter_mut().enumerate() {
                 *byte = master.get(i % master.len()).copied().unwrap_or(0);
@@ -187,8 +208,12 @@ mod tests {
             message_number: 0,
         };
 
-        let env1 = svc.prepare_envelope(&alice, &fp("BB"), &room, vec![1], header.clone(), &crypto).unwrap();
-        let env2 = svc.prepare_envelope(&alice, &fp("BB"), &room, vec![2], header.clone(), &crypto).unwrap();
+        let env1 = svc
+            .prepare_envelope(&alice, &fp("BB"), &room, vec![1], header.clone(), &crypto)
+            .unwrap();
+        let env2 = svc
+            .prepare_envelope(&alice, &fp("BB"), &room, vec![2], header.clone(), &crypto)
+            .unwrap();
 
         assert_eq!(env1.sequence_number(), 1);
         assert_eq!(env2.sequence_number(), 2);
@@ -207,7 +232,9 @@ mod tests {
         };
 
         svc.register_session(alice.clone());
-        let env = svc.prepare_envelope(&alice, &fp("BB"), &room, vec![1, 2, 3], header, &crypto).unwrap();
+        let env = svc
+            .prepare_envelope(&alice, &fp("BB"), &room, vec![1, 2, 3], header, &crypto)
+            .unwrap();
 
         // First receive: ok
         svc.process_received(&env).unwrap();

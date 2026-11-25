@@ -23,8 +23,7 @@ pub struct StatusInfo {
 /// UI port.
 pub trait UiPort: Send + Sync {
     /// Read a line of user input (async blocking).
-    fn read_input(&self)
-        -> impl std::future::Future<Output = Result<String, SanctumError>> + Send;
+    fn read_input(&self) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send;
 
     /// Display an incoming message.
     fn print_message(&self, role: &str, sender: &str, content: &str, timestamp: u64);

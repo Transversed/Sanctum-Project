@@ -29,13 +29,13 @@ pub mod tor_control;
 /// Terminal line renderer (UiPort implementation).
 pub mod terminal_renderer;
 
-// Proto implementation 
+// Proto implementation
 pub mod proto_codec;
 
 // Local test files
-pub mod tcp_transport;
-pub mod host_listener;
 pub mod client_connector;
+pub mod host_listener;
+pub mod tcp_transport;
 
 /// Socks for Tor implementation
 pub mod socks;

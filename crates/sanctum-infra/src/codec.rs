@@ -26,7 +26,10 @@ pub struct Frame {
 impl Frame {
     /// Create a new frame.
     pub fn new(message_type: u8, payload: Vec<u8>) -> Self {
-        Self { message_type, payload }
+        Self {
+            message_type,
+            payload,
+        }
     }
 }
 
@@ -97,9 +100,9 @@ pub fn decode_frame(buf: &mut BytesMut) -> Result<Option<Frame>, SanctumError> {
         return Err(SanctumError::MalformedMessage("frame len = 0".into()));
     }
     if len > MAX_FRAME_LEN {
-        return Err(SanctumError::MalformedMessage(
-            format!("frame too large: {len} > {MAX_FRAME_LEN}"),
-        ));
+        return Err(SanctumError::MalformedMessage(format!(
+            "frame too large: {len} > {MAX_FRAME_LEN}"
+        )));
     }
 
     let total = 4 + len as usize;
@@ -115,7 +118,10 @@ pub fn decode_frame(buf: &mut BytesMut) -> Result<Option<Frame>, SanctumError> {
     let payload = buf[..payload_len].to_vec();
     buf.advance(payload_len);
 
-    Ok(Some(Frame { message_type, payload }))
+    Ok(Some(Frame {
+        message_type,
+        payload,
+    }))
 }
 
 /// Create a ping frame.

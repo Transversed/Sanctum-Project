@@ -19,7 +19,10 @@ pub enum IdentityAction {
 }
 
 /// Run the identity command.
-pub async fn run(action: IdentityAction, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    action: IdentityAction,
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         IdentityAction::Import { keyfile } => {
             let key_data = std::fs::read(&keyfile)?;

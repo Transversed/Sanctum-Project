@@ -137,18 +137,16 @@ impl<U: UiPort> ChatSession<U> {
                 timestamp,
                 ..
             } => {
-                self.ui.print_message("", sender_display, content, *timestamp);
+                self.ui
+                    .print_message("", sender_display, content, *timestamp);
             }
             ChatEvent::OutgoingMessage { content, timestamp } => {
-                self.ui.print_own_message(
-                    "",
-                    &self.config.local_alias,
-                    content,
-                    *timestamp,
-                );
+                self.ui
+                    .print_own_message("", &self.config.local_alias, content, *timestamp);
             }
             ChatEvent::PeerJoining { display, .. } => {
-                self.ui.print_system(&format!("── {display} joining (synchronizing...) ──"));
+                self.ui
+                    .print_system(&format!("── {display} joining (synchronizing...) ──"));
             }
             ChatEvent::PeerReady { display, .. } => {
                 self.ui.print_system(&format!("── {display} ready ──"));
@@ -157,7 +155,8 @@ impl<U: UiPort> ChatSession<U> {
                 self.ui.print_system(&format!("── {display} left ──"));
             }
             ChatEvent::PeerRevoked { display, .. } => {
-                self.ui.print_system(&format!("── {display} was revoked ──"));
+                self.ui
+                    .print_system(&format!("── {display} was revoked ──"));
             }
             ChatEvent::Connected { peer_count, .. } => {
                 self.ui.print_system(&format!(
@@ -203,27 +202,42 @@ mod tests {
     }
 
     impl UiPort for MockUi {
-        fn read_input(&self) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
+        fn read_input(
+            &self,
+        ) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
             async { Ok("/exit".into()) }
         }
         fn print_message(&self, _role: &str, sender: &str, content: &str, _ts: u64) {
-            self.messages.lock().unwrap().push(format!("{sender}: {content}"));
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("{sender}: {content}"));
         }
         fn print_own_message(&self, _role: &str, alias: &str, content: &str, _ts: u64) {
-            self.messages.lock().unwrap().push(format!("{alias}: {content}"));
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("{alias}: {content}"));
         }
         fn print_system(&self, text: &str) {
             self.system.lock().unwrap().push(text.to_string());
         }
         fn print_backlog_start(&self, count: u32) {
-            self.system.lock().unwrap().push(format!("backlog: {count}"));
+            self.system
+                .lock()
+                .unwrap()
+                .push(format!("backlog: {count}"));
         }
         fn print_backlog_end(&self) {
             self.system.lock().unwrap().push("backlog end".into());
         }
         fn update_status(&self, _status: &StatusInfo) {}
-        fn init(&self) -> Result<(), SanctumError> { Ok(()) }
-        fn cleanup(&self) -> Result<(), SanctumError> { Ok(()) }
+        fn init(&self) -> Result<(), SanctumError> {
+            Ok(())
+        }
+        fn cleanup(&self) -> Result<(), SanctumError> {
+            Ok(())
+        }
     }
 
     fn test_config() -> SessionConfig {
@@ -231,7 +245,8 @@ mod tests {
             room_id: RoomId::new(),
             room_name: "test-room".into(),
             room_mode: RoomMode::Ephemeral,
-            local_fingerprint: Fingerprint::new("4A7B3C2D8E9F1A0B5C6D7E8F9A0B1C2D3E4F5A6B").unwrap(),
+            local_fingerprint: Fingerprint::new("4A7B3C2D8E9F1A0B5C6D7E8F9A0B1C2D3E4F5A6B")
+                .unwrap(),
             local_alias: "alice".into(),
             local_role: Role::Owner,
         }

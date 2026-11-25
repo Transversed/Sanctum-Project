@@ -45,7 +45,10 @@ impl NoiseTransport {
         }
 
         let transport = noise::into_transport(state)?;
-        Ok(Self { tcp, noise: transport })
+        Ok(Self {
+            tcp,
+            noise: transport,
+        })
     }
 
     /// Perform the Noise NK handshake as the CLIENT (initiator).
@@ -75,7 +78,10 @@ impl NoiseTransport {
         }
 
         let transport = noise::into_transport(state)?;
-        Ok(Self { tcp, noise: transport })
+        Ok(Self {
+            tcp,
+            noise: transport,
+        })
     }
 
     /// Send a frame with encrypted payload.
@@ -136,10 +142,14 @@ mod tests {
         let (server_tcp, client_tcp) = setup_pair().await;
 
         let host_handle = tokio::spawn(async move {
-            NoiseTransport::host_handshake(server_tcp, &host_priv).await.unwrap()
+            NoiseTransport::host_handshake(server_tcp, &host_priv)
+                .await
+                .unwrap()
         });
         let client_handle = tokio::spawn(async move {
-            NoiseTransport::client_handshake(client_tcp, &host_pub).await.unwrap()
+            NoiseTransport::client_handshake(client_tcp, &host_pub)
+                .await
+                .unwrap()
         });
 
         let mut host = host_handle.await.unwrap();
@@ -162,10 +172,14 @@ mod tests {
         let (server_tcp, client_tcp) = setup_pair().await;
 
         let host_handle = tokio::spawn(async move {
-            NoiseTransport::host_handshake(server_tcp, &host_priv).await.unwrap()
+            NoiseTransport::host_handshake(server_tcp, &host_priv)
+                .await
+                .unwrap()
         });
         let client_handle = tokio::spawn(async move {
-            NoiseTransport::client_handshake(client_tcp, &host_pub).await.unwrap()
+            NoiseTransport::client_handshake(client_tcp, &host_pub)
+                .await
+                .unwrap()
         });
 
         let mut host = host_handle.await.unwrap();
@@ -184,12 +198,14 @@ mod tests {
         let (_, wrong_pub) = noise::generate_keypair().unwrap();
         let (server_tcp, client_tcp) = setup_pair().await;
 
-        let host_handle = tokio::spawn(async move {
-            NoiseTransport::host_handshake(server_tcp, &host_priv).await
-        });
-        let client_handle = tokio::spawn(async move {
-            NoiseTransport::client_handshake(client_tcp, &wrong_pub).await
-        });
+        let host_handle =
+            tokio::spawn(
+                async move { NoiseTransport::host_handshake(server_tcp, &host_priv).await },
+            );
+        let client_handle =
+            tokio::spawn(
+                async move { NoiseTransport::client_handshake(client_tcp, &wrong_pub).await },
+            );
 
         let host_result = host_handle.await.unwrap();
         let client_result = client_handle.await.unwrap();
