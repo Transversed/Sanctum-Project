@@ -81,8 +81,6 @@ jobs:
     name: Ephemeral zero-disk (I4)
     runs-on: ubuntu-latest
     needs: check
-    # Known violation (/tmp/sanctum_noise_pub) until P1.3 lands.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install protoc and strace
