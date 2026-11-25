@@ -1,5 +1,6 @@
 //! Interactive chat loop — crossterm raw mode, status bar, colored messages, bottom prompt.
 
+use sanctum_app::sanitize::{sanitize_alias, sanitize_for_terminal};
 use sanctum_domain::entities::member::Fingerprint;
 use sanctum_infra::codec::message_types;
 use sanctum_infra::e2e_session::{E2eSession, InitialMessage, PeerPrivateKeys};
@@ -167,7 +168,8 @@ pub async fn run_with_config(
                             }
                             message_types::PEER_READY => {
                                 if let Ok(WireMessage::PeerReady(p)) = proto_codec::proto_decode(&frame) {
-                                    let a = if p.display_alias.is_empty() { short(&p.fingerprint).to_string() } else { p.display_alias.clone() };
+                                    let a = sanitize_alias(&p.display_alias)
+                                        .unwrap_or_else(|| short(&p.fingerprint).to_string());
                                     aliases.insert(p.fingerprint.clone(), a.clone());
                                     peer_count += 1;
                                     if raw_ok { goto_msg(&mut out, rows); }
@@ -312,6 +314,9 @@ fn goto_msg(out: &mut Stdout, rows: u16) {
 }
 
 fn write_msg(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, is_own: bool) {
+    // I5: everything printed here may come from the network.
+    let sender = sanitize_for_terminal(sender);
+    let content = sanitize_for_terminal(content);
     let color = if is_own { Color::Green } else { Color::Cyan };
     let _ = write!(
         out,
@@ -331,6 +336,7 @@ fn write_msg(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, is
 }
 
 fn write_sys(out: &mut Stdout, text: &str) {
+    let text = sanitize_for_terminal(text);
     let _ = write!(
         out,
         "{}{}{}",

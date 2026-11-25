@@ -28,3 +28,6 @@ pub mod chat_session;
 
 /// Slash command and input parsing.
 pub mod input_parser;
+
+/// Terminal output sanitization for untrusted text (invariant I5).
+pub mod sanitize;

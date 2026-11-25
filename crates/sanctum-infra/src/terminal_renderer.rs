@@ -3,6 +3,7 @@
 //! MVP renderer using crossterm for line-based interactive chat.
 //! Supports colored output, system messages, and a simple status bar.
 
+use sanctum_app::sanitize::sanitize_for_terminal;
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::ports::ui::{StatusInfo, UiPort};
 
@@ -71,6 +72,8 @@ impl UiPort for TerminalLineRenderer {
 
     fn print_message(&self, _role: &str, sender: &str, content: &str, timestamp: u64) {
         let time = Self::format_time(timestamp);
+        let sender = sanitize_for_terminal(sender);
+        let content = sanitize_for_terminal(content);
         if let Ok(mut out) = self.stdout.lock() {
             let _ = writeln!(
                 out,
@@ -86,6 +89,8 @@ impl UiPort for TerminalLineRenderer {
 
     fn print_own_message(&self, _role: &str, alias: &str, content: &str, timestamp: u64) {
         let time = Self::format_time(timestamp);
+        let alias = sanitize_for_terminal(alias);
+        let content = sanitize_for_terminal(content);
         if let Ok(mut out) = self.stdout.lock() {
             let _ = writeln!(
                 out,
@@ -100,6 +105,7 @@ impl UiPort for TerminalLineRenderer {
     }
 
     fn print_system(&self, text: &str) {
+        let text = sanitize_for_terminal(text);
         if let Ok(mut out) = self.stdout.lock() {
             let _ = writeln!(
                 out,
