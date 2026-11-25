@@ -90,6 +90,9 @@ struct HostState {
     /// Bundles of connected members, in RAM only.
     bundles: Mutex<HashMap<Fingerprint, StoredBundle>>,
     limits: HostLimits,
+    /// Test-only copy of every frame the host decrypts (Noise layer).
+    #[cfg(feature = "test-support")]
+    tap: Option<mpsc::UnboundedSender<Frame>>,
 }
 
 pub struct HostListener {
@@ -124,6 +127,8 @@ impl HostListener {
                 verifier: Ed25519Verifier,
                 bundles: Mutex::new(HashMap::new()),
                 limits: HostLimits::default(),
+                #[cfg(feature = "test-support")]
+                tap: None,
             }),
             shutdown,
         }
@@ -132,6 +137,13 @@ impl HostListener {
     /// Override the default resource limits (before serving).
     pub fn with_limits(mut self, limits: HostLimits) -> Self {
         state_mut(&mut self.state).limits = limits;
+        self
+    }
+
+    /// Test-only: receive a copy of every frame the host can read.
+    #[cfg(feature = "test-support")]
+    pub fn with_tap(mut self, tap: mpsc::UnboundedSender<Frame>) -> Self {
+        state_mut(&mut self.state).tap = Some(tap);
         self
     }
 
@@ -254,6 +266,10 @@ async fn handle_client(
                         break;
                     }
                 };
+                #[cfg(feature = "test-support")]
+                if let Some(tap) = &st.tap {
+                    let _ = tap.send(frame.clone());
+                }
                 let handled = match frame.message_type {
                     message_types::PUBLISH_BUNDLE => {
                         on_publish_bundle(&st, &fingerprint, &frame, &mut transport).await?
@@ -427,13 +443,20 @@ async fn on_refresh_opk(st: &HostState, me: &Fingerprint, frame: &Frame) -> bool
     true
 }
 
-/// Alias accepted by the domain (≤ 20 bytes), derived from untrusted input.
+/// Alias accepted by the domain (`[A-Za-z0-9_-]`, 1–20 bytes), derived
+/// from untrusted input; falls back to `member-<fingerprint prefix>`.
 fn host_side_alias(raw: &str, fingerprint: &Fingerprint) -> String {
-    let mut alias = sanitize_alias(raw).unwrap_or_else(|| fingerprint.short());
-    while alias.len() > 20 {
-        alias.pop();
+    let alias: String = sanitize_alias(raw)
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(20)
+        .collect();
+    if alias.is_empty() {
+        format!("member-{}", fingerprint.as_str().get(..8).unwrap_or("x"))
+    } else {
+        alias
     }
-    alias
 }
 
 async fn send_auth_result(
@@ -560,11 +583,9 @@ async fn authenticate_client(
     let alias = host_side_alias(&response.display_alias, &auth.fingerprint);
     if let Admission::Invited(role) = auth.admission {
         // Admission happens here and only here, with the proven key.
-        let display = DisplayAlias::new(&alias)
-            .or_else(|_| DisplayAlias::new(auth.fingerprint.short()))
-            .map_err(|e| SanctumError::AuthFailed {
-                reason: format!("invalid alias: {e}"),
-            });
+        let display = DisplayAlias::new(&alias).map_err(|e| SanctumError::AuthFailed {
+            reason: format!("invalid alias: {e}"),
+        });
         let added = match display {
             Ok(display) => {
                 let member = Member::new(
@@ -585,4 +606,28 @@ async fn authenticate_client(
     }
     send_auth_result(transport, Ok(auth.admission.role())).await?;
     Ok((auth.fingerprint, alias))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_side_alias_is_always_a_valid_display_alias() {
+        let fp = Fingerprint::new("ABCDEF0123456789ABCDEF0123456789ABCDEF01").unwrap();
+        for raw in [
+            "alice",
+            "Zoé",
+            "\x1b[31mevil\x07",
+            "",
+            "  ",
+            "日本語",
+            &"x".repeat(50),
+        ] {
+            let alias = host_side_alias(raw, &fp);
+            assert!(DisplayAlias::new(&alias).is_ok(), "{raw:?} -> {alias:?}");
+        }
+        assert_eq!(host_side_alias("Zoé", &fp), "Zo");
+        assert_eq!(host_side_alias("日本語", &fp), "member-ABCDEF01");
+    }
 }
