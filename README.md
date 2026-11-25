@@ -22,6 +22,15 @@
 
 ---
 
+> [!WARNING]
+> **Actual state (v0.1.0-dev) — read before use.** The binary does **not** yet deliver the guarantees described below:
+> - **No end-to-end encryption yet.** Messages are refused unless you pass `--insecure-plaintext`, in which case **the host reads everything**. Real E2E (X3DH + Double Ratchet between members) lands in v0.1.1.
+> - **Authentication is not proven yet.** The host trusts the fingerprint a client declares; invitations are not signed.
+> - **Ephemeral mode only.** Persistent mode (encrypted storage, stable `.onion`) is not implemented and is refused by the CLI.
+> - Identities are native **Ed25519** keys, not PGP keys.
+>
+> Progress is tracked in the v0.1.1 correction plan. This notice is removed when the guarantees are verified by tests.
+
 Sanctum is a terminal-first, Tor-only secure chat tool built in Rust. It provides end-to-end encrypted messaging over Tor Hidden Services with zero reliance on clearnet infrastructure, central servers, or trusted third parties.
 
 ## Why Sanctum?
@@ -44,6 +53,7 @@ The host operator sees **who is in the room** (PGP fingerprints) but **never the
 
 | | Ephemeral | Persistent |
 |---|---|---|
+| Availability | **v0.1** | Not implemented yet (refused by the CLI) |
 | Disk writes | **None** | Encrypted SQLite |
 | Message history | Lost when session ends | Retained (configurable limits) |
 | .onion address | Changes every session | Stable across restarts |
@@ -59,16 +69,19 @@ sudo apt install tor
 # Add to /etc/tor/torrc: ControlPort 9051 and CookieAuthentication 1
 
 # Build from source
-git clone https://github.com/sanctum-chat/sanctum.git
-cd sanctum
+git clone https://github.com/Transversed/Sanctum-Project.git
+cd Sanctum-Project
 cargo build --release
 
-# Initialize your profile
-sanctum init
-sanctum identity import ~/.gnupg/your-signing-key.gpg
+# Initialize your profile (creates an Ed25519 identity in ~/.sanctum)
+sanctum init --alias alice
 
-# Host a room
-sanctum host create my-room --mode ephemeral --chat
+# Host a room (prints the ready-to-run invite command, including --host-key)
+sanctum host create my-room --chat
+
+# The owner generates an invite for a member's fingerprint (other terminal)
+sanctum room invite <their_fingerprint> --room-onion <onion> --room-port <port> \
+    --room-id <room_id> --host-key <host_key>
 
 # Join a room (from another machine)
 sanctum join <invite_token>
