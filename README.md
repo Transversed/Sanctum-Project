@@ -152,6 +152,8 @@ Five crates, strict dependency direction, all crypto auditable independently.
 
 ## Building
 
+Prerequisites: Rust ≥ 1.89 and `protoc` (`apt install protobuf-compiler`).
+
 ```bash
 # Debug build
 cargo build --workspace
@@ -163,12 +165,14 @@ cargo build --release --target x86_64-unknown-linux-musl
 cargo test --workspace
 
 # Lint
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full list of checks run in CI.
 
 ## Contributing
 
-Sanctum is in early development. If you're interested in contributing, please read the architecture document first, then open an issue to discuss before submitting PRs.
+Sanctum is in early development. Read [CONTRIBUTING.md](CONTRIBUTING.md) (workflow and security invariants) and the architecture document first, then open an issue to discuss before submitting PRs.
 
 Priorities for contributions: security review, Tor integration testing, crypto protocol verification.
 
