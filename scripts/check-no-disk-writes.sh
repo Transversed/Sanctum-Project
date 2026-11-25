@@ -1,60 +1,77 @@
 #!/usr/bin/env bash
-# Sanctum — Verify zero disk writes in ephemeral mode (AT-07)
+# Sanctum — verify invariant I4: zero disk writes in ephemeral mode.
 #
-# Uses strace to monitor file system writes during an ephemeral session.
-# Any write to the data directory is a FAILURE.
+# Runs an ephemeral host under strace and fails on ANY file-system write
+# (open for writing, create, rename, unlink, mkdir, truncate) outside a
+# short allowlist of terminal/pseudo devices.
+#
+# Usage:
+#   scripts/check-no-disk-writes.sh [--local] [path/to/sanctum]
+#
+#   --local   host without Tor (CI mode). Without it, a running Tor daemon
+#             with ControlPort enabled is required.
+#
+# The profile (`sanctum init`) is created in a throw-away HOME *before*
+# tracing starts: creating a profile is allowed to write, hosting is not.
 set -euo pipefail
 
-SANCTUM_BIN="${1:-target/release/sanctum}"
-DATA_DIR="${SANCTUM_DATA_DIR:-$HOME/.sanctum/data}"
+LOCAL_FLAG=""
+SANCTUM_BIN="target/debug/sanctum"
+for arg in "$@"; do
+    case "$arg" in
+        --local) LOCAL_FLAG="--local" ;;
+        *) SANCTUM_BIN="$arg" ;;
+    esac
+done
+RUN_SECS="${SANCTUM_TRACE_SECS:-5}"
 
 if ! command -v strace &>/dev/null; then
-    echo "[sanctum] error: strace not found — install with: sudo apt install strace"
+    echo "[sanctum] error: strace not found (apt install strace)"
+    exit 2
+fi
+if [ ! -x "$SANCTUM_BIN" ]; then
+    echo "[sanctum] error: binary not found at $SANCTUM_BIN (cargo build first)"
+    exit 2
+fi
+SANCTUM_BIN="$(cd "$(dirname "$SANCTUM_BIN")" && pwd)/$(basename "$SANCTUM_BIN")"
+
+WORK_DIR="$(mktemp -d)"
+TRACE_FILE="$WORK_DIR/trace.log"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+export HOME="$WORK_DIR/home"
+mkdir -p "$HOME"
+cd "$WORK_DIR"
+
+echo "[sanctum] ephemeral disk-write verification"
+echo "  binary: $SANCTUM_BIN"
+echo "  mode:   ${LOCAL_FLAG:-tor}"
+
+# 1. Profile creation (writes allowed, not traced).
+"$SANCTUM_BIN" --no-banner init --alias ci-check >/dev/null
+
+# 2. Ephemeral host under strace, stopped with SIGINT after RUN_SECS.
+strace -f -qq -o "$TRACE_FILE" \
+    -e trace=open,openat,openat2,creat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat,truncate,ftruncate,link,linkat,symlink,symlinkat \
+    timeout -s INT "$RUN_SECS" \
+    "$SANCTUM_BIN" --no-banner host create ci-room --mode ephemeral --port 0 $LOCAL_FLAG \
+    </dev/null >/dev/null 2>&1 || true
+
+if [ ! -s "$TRACE_FILE" ]; then
+    echo "[sanctum] FAIL: empty trace (did the host start?)"
     exit 1
 fi
 
-if [ ! -f "$SANCTUM_BIN" ]; then
-    echo "[sanctum] error: binary not found at $SANCTUM_BIN"
-    echo "[sanctum] build first: cargo build --release"
+# 3. Every write-like syscall is a violation unless it targets a pseudo device.
+ALLOW='"/dev/(null|tty|pts/[0-9]+|ptmx|urandom|random)"|"/proc/self/'
+VIOLATIONS="$(grep -E \
+    'open(at2?)?\(.*(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND)|creat\(|rename(at2?)?\(|unlink(at)?\(|mkdir(at)?\(|truncate\(|link(at)?\(|symlink(at)?\(' \
+    "$TRACE_FILE" | grep -Ev "$ALLOW" | grep -v 'ENOENT' || true)"
+
+if [ -n "$VIOLATIONS" ]; then
+    echo "[sanctum] FAIL: file-system writes detected in ephemeral mode:"
+    echo "$VIOLATIONS" | sed 's/^/    /'
     exit 1
 fi
 
-echo "[sanctum] ephemeral disk write verification"
-echo "  binary:   $SANCTUM_BIN"
-echo "  data_dir: $DATA_DIR"
-echo ""
-
-# Create a trace of all file operations
-TRACE_FILE=$(mktemp /tmp/sanctum-strace-XXXXXX.log)
-
-echo "[sanctum] tracing file operations..."
-strace -f -e trace=open,openat,creat,write,rename,unlink \
-    -o "$TRACE_FILE" \
-    "$SANCTUM_BIN" --no-banner status 2>/dev/null || true
-
-# Check for writes to data directory
-VIOLATIONS=$(grep -c "$DATA_DIR" "$TRACE_FILE" 2>/dev/null || echo "0")
-
-if [ "$VIOLATIONS" -eq 0 ]; then
-    echo "[sanctum] PASS: zero writes to $DATA_DIR"
-else
-    echo "[sanctum] FAIL: $VIOLATIONS file operations detected in $DATA_DIR"
-    echo ""
-    grep "$DATA_DIR" "$TRACE_FILE"
-    rm -f "$TRACE_FILE"
-    exit 1
-fi
-
-# Also check for temp files created by crossterm or other deps
-TEMP_VIOLATIONS=$(grep -cE "(O_WRONLY|O_CREAT|O_TRUNC).*(/tmp/sanctum|\.sanctum)" "$TRACE_FILE" 2>/dev/null || echo "0")
-
-if [ "$TEMP_VIOLATIONS" -eq 0 ]; then
-    echo "[sanctum] PASS: no temp files from sanctum"
-else
-    echo "[sanctum] WARN: $TEMP_VIOLATIONS temp file operations detected"
-    grep -E "(O_WRONLY|O_CREAT|O_TRUNC).*(/tmp/sanctum|\.sanctum)" "$TRACE_FILE"
-fi
-
-rm -f "$TRACE_FILE"
-echo ""
-echo "[sanctum] ephemeral verification complete"
+echo "[sanctum] PASS: zero disk writes during an ephemeral host session (${RUN_SECS}s)"
