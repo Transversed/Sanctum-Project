@@ -2,12 +2,12 @@
 //!
 //! Covers AT-03, AT-09.
 
-use sanctum_app::room_service::RoomService;
 use sanctum_app::host_service::HostService;
+use sanctum_app::room_service::RoomService;
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
-use sanctum_infra::storage_memory::MemoryStorageAdapter;
 use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::storage_memory::MemoryStorageAdapter;
 use tokio::sync::broadcast;
 
 #[test]
@@ -18,8 +18,11 @@ fn create_room_and_store_in_memory() {
 
     room_svc
         .create_room(
-            "ops-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice_id.fingerprint().clone(), alice_id.public_key_bytes(),
+            "ops-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice_id.fingerprint().clone(),
+            alice_id.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
@@ -42,16 +45,22 @@ fn add_member_then_register_in_host_service() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "test-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "test-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
 
     room_svc
         .add_member(
-            alice.fingerprint(), bob.fingerprint().clone(),
-            bob.public_key_bytes(), DisplayAlias::new("bob").unwrap(), Role::Member,
+            alice.fingerprint(),
+            bob.fingerprint().clone(),
+            bob.public_key_bytes(),
+            DisplayAlias::new("bob").unwrap(),
+            Role::Member,
         )
         .unwrap();
 
@@ -76,8 +85,11 @@ fn host_rejects_non_member() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "private-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "private-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
@@ -98,16 +110,22 @@ fn revoke_member_disconnects_from_host() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "test-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "test-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
 
     room_svc
         .add_member(
-            alice.fingerprint(), bob.fingerprint().clone(),
-            bob.public_key_bytes(), DisplayAlias::new("bob").unwrap(), Role::Member,
+            alice.fingerprint(),
+            bob.fingerprint().clone(),
+            bob.public_key_bytes(),
+            DisplayAlias::new("bob").unwrap(),
+            Role::Member,
         )
         .unwrap();
 
@@ -115,10 +133,14 @@ fn revoke_member_disconnects_from_host() {
     let (event_tx, _) = broadcast::channel(16);
     let mut host_svc = HostService::new(room.clone(), event_tx);
 
-    host_svc.register_client(bob.fingerprint().clone(), 100).unwrap();
+    host_svc
+        .register_client(bob.fingerprint().clone(), 100)
+        .unwrap();
     assert!(host_svc.is_connected(bob.fingerprint()));
 
-    room_svc.revoke_member(alice.fingerprint(), bob.fingerprint()).unwrap();
+    room_svc
+        .revoke_member(alice.fingerprint(), bob.fingerprint())
+        .unwrap();
 
     host_svc.remove_client(bob.fingerprint());
     assert!(!host_svc.is_connected(bob.fingerprint()));
@@ -132,8 +154,11 @@ fn invite_generate_validate_round_trip() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "invite-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "invite-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
@@ -171,24 +196,47 @@ fn host_routes_to_ready_peers_only() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "route-room", RoomMode::Ephemeral, RoomConfig::default(),
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "route-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
 
-    room_svc.add_member(alice.fingerprint(), bob.fingerprint().clone(),
-        bob.public_key_bytes(), DisplayAlias::new("bob").unwrap(), Role::Member).unwrap();
-    room_svc.add_member(alice.fingerprint(), charlie.fingerprint().clone(),
-        charlie.public_key_bytes(), DisplayAlias::new("charlie").unwrap(), Role::Member).unwrap();
+    room_svc
+        .add_member(
+            alice.fingerprint(),
+            bob.fingerprint().clone(),
+            bob.public_key_bytes(),
+            DisplayAlias::new("bob").unwrap(),
+            Role::Member,
+        )
+        .unwrap();
+    room_svc
+        .add_member(
+            alice.fingerprint(),
+            charlie.fingerprint().clone(),
+            charlie.public_key_bytes(),
+            DisplayAlias::new("charlie").unwrap(),
+            Role::Member,
+        )
+        .unwrap();
 
     let room = room_svc.room().unwrap();
     let (event_tx, _) = broadcast::channel(16);
     let mut host_svc = HostService::new(room.clone(), event_tx);
 
-    host_svc.register_client(alice.fingerprint().clone(), 1).unwrap();
-    host_svc.register_client(bob.fingerprint().clone(), 2).unwrap();
-    host_svc.register_client(charlie.fingerprint().clone(), 3).unwrap();
+    host_svc
+        .register_client(alice.fingerprint().clone(), 1)
+        .unwrap();
+    host_svc
+        .register_client(bob.fingerprint().clone(), 2)
+        .unwrap();
+    host_svc
+        .register_client(charlie.fingerprint().clone(), 3)
+        .unwrap();
 
     host_svc.mark_client_ready(bob.fingerprint());
 
@@ -211,18 +259,33 @@ fn room_full_prevents_new_members() {
     let mut room_svc = RoomService::new();
     room_svc
         .create_room(
-            "tiny-room", RoomMode::Ephemeral, config,
-            alice.fingerprint().clone(), alice.public_key_bytes(),
+            "tiny-room",
+            RoomMode::Ephemeral,
+            config,
+            alice.fingerprint().clone(),
+            alice.public_key_bytes(),
             DisplayAlias::new("alice").unwrap(),
         )
         .unwrap();
 
     let bob = IdentityAdapter::generate();
-    room_svc.add_member(alice.fingerprint(), bob.fingerprint().clone(),
-        bob.public_key_bytes(), DisplayAlias::new("bob").unwrap(), Role::Member).unwrap();
+    room_svc
+        .add_member(
+            alice.fingerprint(),
+            bob.fingerprint().clone(),
+            bob.public_key_bytes(),
+            DisplayAlias::new("bob").unwrap(),
+            Role::Member,
+        )
+        .unwrap();
 
     let charlie = IdentityAdapter::generate();
-    let result = room_svc.add_member(alice.fingerprint(), charlie.fingerprint().clone(),
-        charlie.public_key_bytes(), DisplayAlias::new("charlie").unwrap(), Role::Member);
+    let result = room_svc.add_member(
+        alice.fingerprint(),
+        charlie.fingerprint().clone(),
+        charlie.public_key_bytes(),
+        DisplayAlias::new("charlie").unwrap(),
+        Role::Member,
+    );
     assert!(result.is_err(), "room should be full");
 }

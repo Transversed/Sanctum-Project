@@ -80,8 +80,10 @@ mod tests {
             onion_address: "abc123xyz456abc123xyz456abc123xyz456abc123xyz456abcdefgh.onion".into(),
             port: 9738,
             host_noise_pubkey: vec![42u8; 32],
-            inviter_fingerprint: Fingerprint::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
-            invited_fingerprint: Fingerprint::new("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB").unwrap(),
+            inviter_fingerprint: Fingerprint::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .unwrap(),
+            invited_fingerprint: Fingerprint::new("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+                .unwrap(),
             role: Role::Member,
             expires_at: now + 3600,
             signature: vec![],

@@ -14,10 +14,22 @@ use sanctum_infra::storage_sqlite::SqliteStorageAdapter;
 struct MockCrypto;
 
 impl CryptoPort for MockCrypto {
-    fn encrypt(&self, _key: &[u8], _nonce: &[u8], plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+    fn encrypt(
+        &self,
+        _key: &[u8],
+        _nonce: &[u8],
+        plaintext: &[u8],
+        _aad: &[u8],
+    ) -> Result<Vec<u8>, SanctumError> {
         Ok(plaintext.to_vec())
     }
-    fn decrypt(&self, _key: &[u8], _nonce: &[u8], ciphertext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+    fn decrypt(
+        &self,
+        _key: &[u8],
+        _nonce: &[u8],
+        ciphertext: &[u8],
+        _aad: &[u8],
+    ) -> Result<Vec<u8>, SanctumError> {
         Ok(ciphertext.to_vec())
     }
     fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
@@ -37,7 +49,12 @@ impl CryptoPort for MockCrypto {
         let len = u32::from_be_bytes([padded[0], padded[1], padded[2], padded[3]]) as usize;
         Ok(padded[4..4 + len].to_vec())
     }
-    fn derive_key(&self, master: &[u8], _info: &[u8], output_len: usize) -> Result<Vec<u8>, SanctumError> {
+    fn derive_key(
+        &self,
+        master: &[u8],
+        _info: &[u8],
+        output_len: usize,
+    ) -> Result<Vec<u8>, SanctumError> {
         let mut out = vec![0u8; output_len];
         for (i, byte) in out.iter_mut().enumerate() {
             *byte = master.get(i % master.len()).copied().unwrap_or(0);
@@ -52,8 +69,11 @@ fn fp(s: &str) -> Fingerprint {
 
 fn make_room() -> Room {
     let owner = Member::new(
-        fp("AA"), vec![0u8; 32],
-        DisplayAlias::new("alice").unwrap(), Role::Owner, 0,
+        fp("AA"),
+        vec![0u8; 32],
+        DisplayAlias::new("alice").unwrap(),
+        Role::Owner,
+        0,
     );
     Room::new("test", RoomMode::Persistent, RoomConfig::default(), owner)
 }
@@ -79,7 +99,14 @@ fn make_envelopes(count: usize) -> Vec<sanctum_domain::entities::message::Messag
         .map(|i| {
             let padded = msg_svc.pad_message(format!("msg-{i}").as_bytes(), &crypto);
             msg_svc
-                .prepare_envelope(&alice, &bob, room.id(), padded, mock_ratchet_header(), &crypto)
+                .prepare_envelope(
+                    &alice,
+                    &bob,
+                    room.id(),
+                    padded,
+                    mock_ratchet_header(),
+                    &crypto,
+                )
                 .unwrap()
         })
         .collect()
@@ -115,10 +142,20 @@ fn backlog_round_trip_sqlite() {
 
     let envelopes = make_envelopes(5);
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
     for env in &envelopes {
-        store.store_message(room.id(), &bob, env.sequence_number(), env.ciphertext(), now).unwrap();
+        store
+            .store_message(
+                room.id(),
+                &bob,
+                env.sequence_number(),
+                env.ciphertext(),
+                now,
+            )
+            .unwrap();
     }
 
     let backlog = store.fetch_backlog(room.id(), &bob, 0).unwrap();
@@ -153,12 +190,18 @@ fn gc_purges_expired_sqlite() {
     store.store_room(room.id(), b"room_data", 0).unwrap();
 
     for i in 1..=3 {
-        store.store_message(room.id(), &bob, i, b"old_msg", 100).unwrap();
+        store
+            .store_message(room.id(), &bob, i, b"old_msg", 100)
+            .unwrap();
     }
 
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    store.store_message(room.id(), &bob, 4, b"new_msg", now).unwrap();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    store
+        .store_message(room.id(), &bob, 4, b"new_msg", now)
+        .unwrap();
 
     let purged = store.purge_expired(3600).unwrap();
     assert_eq!(purged, 3);
@@ -195,10 +238,14 @@ fn backlog_excess_purge_sqlite() {
     store.store_room(room.id(), b"room", 0).unwrap();
 
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
     for i in 1..=10 {
-        store.store_message(room.id(), &bob, i, b"msg", now).unwrap();
+        store
+            .store_message(room.id(), &bob, i, b"msg", now)
+            .unwrap();
     }
 
     let purged = store.purge_excess(room.id(), 3).unwrap();
@@ -227,9 +274,13 @@ fn memory_and_sqlite_backlog_consistent() {
     let sql_storage = SqliteStorageAdapter::open_in_memory().unwrap();
     sql_storage.store_room(&room_id, b"room", 0).unwrap();
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     for env in &envelopes {
-        sql_storage.store_message(&room_id, &bob, env.sequence_number(), env.ciphertext(), now).unwrap();
+        sql_storage
+            .store_message(&room_id, &bob, env.sequence_number(), env.ciphertext(), now)
+            .unwrap();
     }
     let sql_backlog = sql_storage.fetch_backlog(&room_id, &bob, 2).unwrap();
 

@@ -8,7 +8,14 @@ pub async fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let profile_exists = home.exists();
 
     println!("[sanctum] system status");
-    println!("  profile:  {}", if profile_exists { "initialized" } else { "not initialized" });
+    println!(
+        "  profile:  {}",
+        if profile_exists {
+            "initialized"
+        } else {
+            "not initialized"
+        }
+    );
     println!("  home:     {}", home.display());
     println!("  alias:    {}", config.identity.alias);
 
@@ -21,14 +28,19 @@ pub async fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Tor
-    println!("  tor:      socks=127.0.0.1:{}, control=127.0.0.1:{}",
-        config.tor.socks_port, config.tor.control_port);
+    println!(
+        "  tor:      socks=127.0.0.1:{}, control=127.0.0.1:{}",
+        config.tor.socks_port, config.tor.control_port
+    );
 
     // TODO: check actual Tor connectivity
     println!("  tor conn: unknown (not checked)");
 
     // Host
-    println!("  host:     port={}, mode={}", config.host.listen_port, config.host.default_mode);
+    println!(
+        "  host:     port={}, mode={}",
+        config.host.listen_port, config.host.default_mode
+    );
 
     Ok(())
 }

@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod banner;
-mod config;
 mod commands;
+mod config;
 
 /// Sanctum — encrypted group chat over Tor hidden services.
 #[derive(Parser)]
@@ -114,10 +114,7 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         // Restore terminal
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::Show
-        );
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
         eprintln!("\n[sanctum] fatal error — secrets may still be in memory");
         default_hook(info);
     }));
@@ -167,35 +164,26 @@ async fn run(
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Commands::Init { alias } => {
-            commands::init::run(alias, &config).await
-        }
-        Commands::Identity { action } => {
-            commands::identity::run(action, &config).await
-        }
-        Commands::Host { action } => {
-            commands::host::run(action, &config, shutdown).await
-        }
+        Commands::Init { alias } => commands::init::run(alias, &config).await,
+        Commands::Identity { action } => commands::identity::run(action, &config).await,
+        Commands::Host { action } => commands::host::run(action, &config, shutdown).await,
         Commands::Join { token, no_chat } => {
             commands::join::run(&token, no_chat, &config, shutdown).await
         }
         Commands::Chat { room_id, backlog } => {
             commands::chat::run(&room_id, backlog, &config, shutdown).await
         }
-        Commands::Room { action } => {
-            commands::room::run(action, &config).await
-        }
+        Commands::Room { action } => commands::room::run(action, &config).await,
         Commands::Send { room_id, message } => {
             commands::send::run(&room_id, &message, &config).await
         }
-        Commands::Read { room_id, follow, last, json } => {
-            commands::read::run(&room_id, follow, last, json, &config).await
-        }
-        Commands::Status => {
-            commands::status::run(&config).await
-        }
-        Commands::ExportManifest => {
-            commands::export_manifest::run().await
-        }
+        Commands::Read {
+            room_id,
+            follow,
+            last,
+            json,
+        } => commands::read::run(&room_id, follow, last, json, &config).await,
+        Commands::Status => commands::status::run(&config).await,
+        Commands::ExportManifest => commands::export_manifest::run().await,
     }
 }

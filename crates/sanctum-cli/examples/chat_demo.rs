@@ -57,10 +57,17 @@ async fn main() {
     match args[1].as_str() {
         "host" => run_host(local_mode).await,
         "join" => {
-            let onion = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str());
+            let onion = args
+                .iter()
+                .skip(2)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str());
             run_client(local_mode, onion).await;
         }
-        _ => { print_usage(); std::process::exit(1); }
+        _ => {
+            print_usage();
+            std::process::exit(1);
+        }
     }
 }
 
@@ -82,21 +89,35 @@ async fn run_host(local_mode: bool) {
     println!("[sanctum] Noise keypair generated");
 
     let alice_e2e_keys = PeerPrivateKeys::generate(5);
-    write_e2e_pubkeys("/tmp/sanctum_demo_alice_e2e_pub", &alice_e2e_keys.public_keys());
+    write_e2e_pubkeys(
+        "/tmp/sanctum_demo_alice_e2e_pub",
+        &alice_e2e_keys.public_keys(),
+    );
     println!("[sanctum] E2E keys generated (IK + SPK + 5 OPKs)");
 
     let mut room_svc = RoomService::new();
     let alice_fp = Fingerprint::new(ALICE_FP).unwrap();
     let bob_fp = Fingerprint::new(BOB_FP).unwrap();
 
-    room_svc.create_room(
-        "demo-room", RoomMode::Ephemeral, RoomConfig::default(),
-        alice_fp.clone(), vec![0u8; 32], DisplayAlias::new("alice").unwrap(),
-    ).unwrap();
-    room_svc.add_member(
-        &alice_fp, bob_fp.clone(), vec![0u8; 32],
-        DisplayAlias::new("bob").unwrap(), Role::Member,
-    ).unwrap();
+    room_svc
+        .create_room(
+            "demo-room",
+            RoomMode::Ephemeral,
+            RoomConfig::default(),
+            alice_fp.clone(),
+            vec![0u8; 32],
+            DisplayAlias::new("alice").unwrap(),
+        )
+        .unwrap();
+    room_svc
+        .add_member(
+            &alice_fp,
+            bob_fp.clone(),
+            vec![0u8; 32],
+            DisplayAlias::new("bob").unwrap(),
+            Role::Member,
+        )
+        .unwrap();
 
     let room = room_svc.room().unwrap().clone();
     let shutdown = CancellationToken::new();
@@ -116,31 +137,43 @@ async fn run_host(local_mode: bool) {
 
     let _hs = match tor.create_hidden_service().await {
         Ok(hs) => {
-            if !local_mode { println!("[sanctum] hidden service: {}", hs.onion_address); }
+            if !local_mode {
+                println!("[sanctum] hidden service: {}", hs.onion_address);
+            }
             hs
         }
-        Err(e) => { eprintln!("[sanctum] erreur: {e}"); return; }
+        Err(e) => {
+            eprintln!("[sanctum] erreur: {e}");
+            return;
+        }
     };
 
-    println!("[sanctum] room '{}' (éphémère), Noise + E2E activés", room.name());
+    println!(
+        "[sanctum] room '{}' (éphémère), Noise + E2E activés",
+        room.name()
+    );
     println!();
 
     let (event_tx, _) = broadcast::channel::<SanctumEvent>(64);
     let host_svc = HostService::new(room, event_tx);
     let listener = HostListener::new(
-        LOCAL_BIND.into(), host_svc,
-        noise_pub.clone(), noise_priv.clone(), shutdown.clone(),
+        LOCAL_BIND.into(),
+        host_svc,
+        noise_pub.clone(),
+        noise_priv.clone(),
+        shutdown.clone(),
     );
 
     let relay_handle = tokio::spawn(async move {
-        if let Err(e) = listener.run().await { eprintln!("[sanctum] relay: {e}"); }
+        if let Err(e) = listener.run().await {
+            eprintln!("[sanctum] relay: {e}");
+        }
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    let session = client_connector::connect_and_auth(
-        LOCAL_BIND, &alice_fp, "alice", &noise_pub,
-    ).await;
+    let session =
+        client_connector::connect_and_auth(LOCAL_BIND, &alice_fp, "alice", &noise_pub).await;
 
     let session = match session {
         Ok(s) => {
@@ -151,7 +184,9 @@ async fn run_host(local_mode: bool) {
         }
         Err(e) => {
             eprintln!("[sanctum] erreur: {e}");
-            shutdown.cancel(); let _ = relay_handle.await; return;
+            shutdown.cancel();
+            let _ = relay_handle.await;
+            return;
         }
     };
 
@@ -178,7 +213,9 @@ async fn run_client(local_mode: bool, onion: Option<&str>) {
     println!("[sanctum] lecture clé Noise du host...");
     let noise_pub = loop {
         if let Ok(data) = tokio::fs::read("/tmp/sanctum_demo_noise_pub").await {
-            if data.len() == 32 { break data; }
+            if data.len() == 32 {
+                break data;
+            }
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     };
@@ -187,10 +224,21 @@ async fn run_client(local_mode: bool, onion: Option<&str>) {
         println!("[sanctum] connexion à {LOCAL_BIND}...");
         client_connector::connect_and_auth(LOCAL_BIND, &bob_fp, "bob", &noise_pub).await
     } else {
-        let addr = onion.unwrap_or_else(|| { eprintln!("adresse .onion requise"); std::process::exit(1); });
+        let addr = onion.unwrap_or_else(|| {
+            eprintln!("adresse .onion requise");
+            std::process::exit(1);
+        });
         let tc = TorConfig::default();
         println!("[sanctum] connexion à {addr} via Tor...");
-        client_connector::connect_via_tor_and_auth(&tc.socks_addr, addr, DEFAULT_PORT, &bob_fp, "bob", &noise_pub).await
+        client_connector::connect_via_tor_and_auth(
+            &tc.socks_addr,
+            addr,
+            DEFAULT_PORT,
+            &bob_fp,
+            "bob",
+            &noise_pub,
+        )
+        .await
     };
 
     let session = match session {
@@ -200,7 +248,10 @@ async fn run_client(local_mode: bool, onion: Option<&str>) {
             println!("──────────────────────────────────────────────");
             s
         }
-        Err(e) => { eprintln!("[sanctum] erreur: {e}"); return; }
+        Err(e) => {
+            eprintln!("[sanctum] erreur: {e}");
+            return;
+        }
     };
 
     run_chat(session, bob_fp, Some(bob_e2e_keys), false).await;
@@ -231,9 +282,15 @@ async fn run_chat(
             match line {
                 Ok(text) => {
                     let text = text.trim().to_string();
-                    if text.is_empty() { continue; }
-                    if text == "/exit" || text == "/quit" || text == "/q" { break; }
-                    if line_tx.blocking_send(text).is_err() { break; }
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if text == "/exit" || text == "/quit" || text == "/q" {
+                        break;
+                    }
+                    if line_tx.blocking_send(text).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
@@ -423,27 +480,59 @@ fn read_e2e_pubkeys(path: &str) -> Option<PeerPublicKeys> {
     let data = std::fs::read(path).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&data).ok()?;
 
-    let ik: Vec<u8> = v["identity_pub"].as_array()?
-        .iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
-    let spk: Vec<u8> = v["signed_prekey_pub"].as_array()?
-        .iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
-    let opks: Vec<[u8; 32]> = v["one_time_prekeys"].as_array()?
-        .iter().filter_map(|arr| {
-            let b: Vec<u8> = arr.as_array()?.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
-            if b.len() == 32 { let mut o = [0u8; 32]; o.copy_from_slice(&b); Some(o) } else { None }
-        }).collect();
+    let ik: Vec<u8> = v["identity_pub"]
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_u64().map(|n| n as u8))
+        .collect();
+    let spk: Vec<u8> = v["signed_prekey_pub"]
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_u64().map(|n| n as u8))
+        .collect();
+    let opks: Vec<[u8; 32]> = v["one_time_prekeys"]
+        .as_array()?
+        .iter()
+        .filter_map(|arr| {
+            let b: Vec<u8> = arr
+                .as_array()?
+                .iter()
+                .filter_map(|x| x.as_u64().map(|n| n as u8))
+                .collect();
+            if b.len() == 32 {
+                let mut o = [0u8; 32];
+                o.copy_from_slice(&b);
+                Some(o)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    if ik.len() != 32 || spk.len() != 32 { return None; }
-    let mut ik_a = [0u8; 32]; ik_a.copy_from_slice(&ik);
-    let mut spk_a = [0u8; 32]; spk_a.copy_from_slice(&spk);
-    Some(PeerPublicKeys { identity_pub: ik_a, signed_prekey_pub: spk_a, one_time_prekeys: opks })
+    if ik.len() != 32 || spk.len() != 32 {
+        return None;
+    }
+    let mut ik_a = [0u8; 32];
+    ik_a.copy_from_slice(&ik);
+    let mut spk_a = [0u8; 32];
+    spk_a.copy_from_slice(&spk);
+    Some(PeerPublicKeys {
+        identity_pub: ik_a,
+        signed_prekey_pub: spk_a,
+        one_time_prekeys: opks,
+    })
 }
 
 fn resolve_alias(fp: &str) -> &str {
-    if fp.starts_with("AAAA") { "alice" }
-    else if fp.starts_with("BBBB") { "bob" }
-    else if fp.len() >= 8 { &fp[..8] }
-    else { fp }
+    if fp.starts_with("AAAA") {
+        "alice"
+    } else if fp.starts_with("BBBB") {
+        "bob"
+    } else if fp.len() >= 8 {
+        &fp[..8]
+    } else {
+        fp
+    }
 }
 
 fn now_ts() -> u64 {

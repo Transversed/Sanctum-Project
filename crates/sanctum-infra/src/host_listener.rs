@@ -135,9 +135,18 @@ async fn handle_client(
 
     // ── Phase 2: Auth ──
     let (fingerprint, display_alias) = authenticate_client(
-        &mut transport, &host_svc, &auth_svc, &host_noise_pubkey, conn_id,
-    ).await?;
-    eprintln!("[sanctum] client #{conn_id} authenticated: {} ({})", display_alias, fingerprint.short());
+        &mut transport,
+        &host_svc,
+        &auth_svc,
+        &host_noise_pubkey,
+        conn_id,
+    )
+    .await?;
+    eprintln!(
+        "[sanctum] client #{conn_id} authenticated: {} ({})",
+        display_alias,
+        fingerprint.short()
+    );
 
     // Register client
     {
@@ -148,12 +157,17 @@ async fn handle_client(
 
     // Store alias
     {
-        aliases.lock().await.insert(fingerprint.as_str().to_string(), display_alias.clone());
+        aliases
+            .lock()
+            .await
+            .insert(fingerprint.as_str().to_string(), display_alias.clone());
     }
 
     // Create outbound channel
     let (out_tx, mut out_rx) = mpsc::channel::<Frame>(256);
-    { clients.lock().await.insert(conn_id, out_tx); }
+    {
+        clients.lock().await.insert(conn_id, out_tx);
+    }
 
     let mut route_rx = route_tx.subscribe();
 
@@ -162,10 +176,12 @@ async fn handle_client(
         let alias_map = aliases.lock().await;
         for (fp_str, alias) in alias_map.iter() {
             if fp_str != fingerprint.as_str() {
-                let peer_frame = proto_codec::proto_encode(&WireMessage::PeerReady(pb::PeerReady {
-                    fingerprint: fp_str.clone(),
-                    display_alias: alias.clone(),
-                })).unwrap();
+                let peer_frame =
+                    proto_codec::proto_encode(&WireMessage::PeerReady(pb::PeerReady {
+                        fingerprint: fp_str.clone(),
+                        display_alias: alias.clone(),
+                    }))
+                    .unwrap();
                 let _ = transport.send_frame(&peer_frame).await;
             }
         }
@@ -175,7 +191,8 @@ async fn handle_client(
     let join_frame = proto_codec::proto_encode(&WireMessage::PeerReady(pb::PeerReady {
         fingerprint: fingerprint.as_str().to_string(),
         display_alias: display_alias.clone(),
-    })).unwrap();
+    }))
+    .unwrap();
     let _ = route_tx.send(RoutedMessage {
         sender: fingerprint.clone(),
         frame: join_frame,
@@ -238,14 +255,24 @@ async fn handle_client(
     }
 
     // Cleanup
-    { host_svc.lock().await.remove_client(&fingerprint); }
-    { clients.lock().await.remove(&conn_id); }
-    { aliases.lock().await.remove(fingerprint.as_str()); }
+    {
+        host_svc.lock().await.remove_client(&fingerprint);
+    }
+    {
+        clients.lock().await.remove(&conn_id);
+    }
+    {
+        aliases.lock().await.remove(fingerprint.as_str());
+    }
     transport.shutdown().await;
 
     // Notify peers that this client left
     // (In production: broadcast a PeerLeft event)
-    eprintln!("[sanctum] {} ({}) left the room", display_alias, fingerprint.short());
+    eprintln!(
+        "[sanctum] {} ({}) left the room",
+        display_alias,
+        fingerprint.short()
+    );
     Ok(())
 }
 
@@ -272,22 +299,32 @@ async fn authenticate_client(
         room_id: challenge.room_id.as_str().to_string(),
         server_id: challenge.server_id.to_vec(),
     });
-    transport.send_frame(&proto_codec::proto_encode(&challenge_msg)?).await?;
+    transport
+        .send_frame(&proto_codec::proto_encode(&challenge_msg)?)
+        .await?;
 
     let resp_frame = transport.recv_frame().await?;
     if resp_frame.message_type != message_types::AUTH_RESPONSE {
         return Err(SanctumError::AuthFailed {
-            reason: format!("expected AuthResponse, got 0x{:02X}", resp_frame.message_type),
+            reason: format!(
+                "expected AuthResponse, got 0x{:02X}",
+                resp_frame.message_type
+            ),
         });
     }
 
     let (fingerprint, display_alias) = match proto_codec::proto_decode(&resp_frame)? {
         WireMessage::AuthResponse(r) => {
-            let fp = Fingerprint::new(r.fingerprint)
-                .map_err(|e| SanctumError::AuthFailed { reason: e.to_string() })?;
+            let fp = Fingerprint::new(r.fingerprint).map_err(|e| SanctumError::AuthFailed {
+                reason: e.to_string(),
+            })?;
             (fp, r.display_alias)
         }
-        _ => return Err(SanctumError::AuthFailed { reason: "unexpected message".into() }),
+        _ => {
+            return Err(SanctumError::AuthFailed {
+                reason: "unexpected message".into(),
+            })
+        }
     };
 
     // Add member dynamically if not already present
@@ -297,8 +334,9 @@ async fn authenticate_client(
             let member = sanctum_domain::entities::member::Member::new(
                 fingerprint.clone(),
                 vec![0u8; 32],
-                sanctum_domain::entities::member::DisplayAlias::new(&display_alias)
-                    .unwrap_or_else(|_| sanctum_domain::entities::member::DisplayAlias::new("anon").unwrap()),
+                sanctum_domain::entities::member::DisplayAlias::new(&display_alias).unwrap_or_else(
+                    |_| sanctum_domain::entities::member::DisplayAlias::new("anon").unwrap(),
+                ),
                 sanctum_domain::entities::member::Role::Member,
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -311,7 +349,9 @@ async fn authenticate_client(
 
     let authorized_fps = {
         let svc = host_svc.lock().await;
-        svc.room().members().iter()
+        svc.room()
+            .members()
+            .iter()
             .filter(|m| m.is_active())
             .map(|m| m.fingerprint().clone())
             .collect::<std::collections::HashSet<_>>()
@@ -324,7 +364,10 @@ async fn authenticate_client(
         display_alias: display_alias.clone(),
     };
 
-    auth_svc.lock().await.verify_response(&challenge, &auth_response, &authorized_fps)?;
+    auth_svc
+        .lock()
+        .await
+        .verify_response(&challenge, &auth_response, &authorized_fps)?;
 
     let result_msg = WireMessage::AuthResult(pb::AuthResult {
         success: true,
@@ -332,7 +375,9 @@ async fn authenticate_client(
         member_role: "member".into(),
         room_state: None,
     });
-    transport.send_frame(&proto_codec::proto_encode(&result_msg)?).await?;
+    transport
+        .send_frame(&proto_codec::proto_encode(&result_msg)?)
+        .await?;
 
     Ok((fingerprint, display_alias))
 }

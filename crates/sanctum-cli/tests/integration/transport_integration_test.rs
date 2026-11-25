@@ -3,7 +3,7 @@
 //! Tests InProcessTransport + codec working together to simulate
 //! host ↔ client communication without TCP or Tor.
 
-use sanctum_infra::codec::{Frame, message_types};
+use sanctum_infra::codec::{message_types, Frame};
 use sanctum_infra::transport::InProcessTransport;
 
 // ---------- Full exchange simulation ----------
@@ -38,7 +38,10 @@ async fn auth_challenge_response_over_transport() {
     let (host_side, client_side) = InProcessTransport::pair();
 
     // Host sends challenge
-    let challenge = Frame::new(message_types::AUTH_CHALLENGE, b"nonce+timestamp+room+server".to_vec());
+    let challenge = Frame::new(
+        message_types::AUTH_CHALLENGE,
+        b"nonce+timestamp+room+server".to_vec(),
+    );
     host_side.send(challenge).await.unwrap();
 
     // Client receives and responds
@@ -136,7 +139,10 @@ async fn error_frame_delivery() {
 
     let received = client_side.recv().await.unwrap();
     assert_eq!(received.message_type, message_types::ERROR);
-    assert_eq!(String::from_utf8_lossy(&received.payload), "protocol version mismatch");
+    assert_eq!(
+        String::from_utf8_lossy(&received.payload),
+        "protocol version mismatch"
+    );
 }
 
 // ---------- Channel closed detection ----------
@@ -168,13 +174,17 @@ async fn concurrent_bidirectional_traffic() {
     // Host sends 10 messages while client sends 10 messages
     let host_task = tokio::spawn(async move {
         for i in 0..10u8 {
-            hs.send(Frame::new(message_types::ROOM_MESSAGE, vec![i])).await.unwrap();
+            hs.send(Frame::new(message_types::ROOM_MESSAGE, vec![i]))
+                .await
+                .unwrap();
         }
     });
 
     let client_task = tokio::spawn(async move {
         for i in 100..110u8 {
-            cs.send(Frame::new(message_types::ROOM_MESSAGE, vec![i])).await.unwrap();
+            cs.send(Frame::new(message_types::ROOM_MESSAGE, vec![i]))
+                .await
+                .unwrap();
         }
     });
 

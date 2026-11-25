@@ -1,14 +1,14 @@
 //! Domain entities.
 
-/// Room.
-pub mod room;
+/// Cryptographic identity.
+pub mod identity;
+/// Invite token.
+pub mod invite;
 /// Member.
 pub mod member;
 /// Message envelope.
 pub mod message;
-/// Cryptographic identity.
-pub mod identity;
+/// Room.
+pub mod room;
 /// Double Ratchet session metadata.
 pub mod session;
-/// Invite token.
-pub mod invite;

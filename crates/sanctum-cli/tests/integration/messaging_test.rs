@@ -8,16 +8,28 @@ use sanctum_domain::entities::message::RatchetHeader;
 use sanctum_domain::entities::room::{Room, RoomConfig, RoomMode};
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::ports::crypto::CryptoPort;
-use sanctum_infra::codec::{self, Frame, message_types};
+use sanctum_infra::codec::{self, message_types, Frame};
 use sanctum_infra::storage_memory::MemoryStorageAdapter;
 
 struct MockCrypto;
 
 impl CryptoPort for MockCrypto {
-    fn encrypt(&self, _key: &[u8], _nonce: &[u8], plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+    fn encrypt(
+        &self,
+        _key: &[u8],
+        _nonce: &[u8],
+        plaintext: &[u8],
+        _aad: &[u8],
+    ) -> Result<Vec<u8>, SanctumError> {
         Ok(plaintext.to_vec())
     }
-    fn decrypt(&self, _key: &[u8], _nonce: &[u8], ciphertext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, SanctumError> {
+    fn decrypt(
+        &self,
+        _key: &[u8],
+        _nonce: &[u8],
+        ciphertext: &[u8],
+        _aad: &[u8],
+    ) -> Result<Vec<u8>, SanctumError> {
         Ok(ciphertext.to_vec())
     }
     fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
@@ -37,7 +49,12 @@ impl CryptoPort for MockCrypto {
         let len = u32::from_be_bytes([padded[0], padded[1], padded[2], padded[3]]) as usize;
         Ok(padded[4..4 + len].to_vec())
     }
-    fn derive_key(&self, master: &[u8], _info: &[u8], output_len: usize) -> Result<Vec<u8>, SanctumError> {
+    fn derive_key(
+        &self,
+        master: &[u8],
+        _info: &[u8],
+        output_len: usize,
+    ) -> Result<Vec<u8>, SanctumError> {
         let mut out = vec![0u8; output_len];
         for (i, byte) in out.iter_mut().enumerate() {
             *byte = master.get(i % master.len()).copied().unwrap_or(0);
@@ -52,8 +69,11 @@ fn fp(s: &str) -> Fingerprint {
 
 fn make_room() -> Room {
     let owner = Member::new(
-        fp("AA"), vec![0u8; 32],
-        DisplayAlias::new("alice").unwrap(), Role::Owner, 0,
+        fp("AA"),
+        vec![0u8; 32],
+        DisplayAlias::new("alice").unwrap(),
+        Role::Owner,
+        0,
     );
     Room::new("test", RoomMode::Ephemeral, RoomConfig::default(), owner)
 }
@@ -86,7 +106,14 @@ fn message_send_receive_full_flow() {
     let ciphertext = padded.clone(); // passthrough
 
     let envelope = alice_msg_svc
-        .prepare_envelope(&alice, &bob, room.id(), ciphertext, mock_ratchet_header(), &crypto)
+        .prepare_envelope(
+            &alice,
+            &bob,
+            room.id(),
+            ciphertext,
+            mock_ratchet_header(),
+            &crypto,
+        )
         .unwrap();
 
     assert_eq!(envelope.sequence_number(), 1);
@@ -113,7 +140,14 @@ fn replay_attack_detected() {
 
     let padded = msg_svc.pad_message(b"message", &crypto);
     let envelope = msg_svc
-        .prepare_envelope(&alice, &bob, room.id(), padded, mock_ratchet_header(), &crypto)
+        .prepare_envelope(
+            &alice,
+            &bob,
+            room.id(),
+            padded,
+            mock_ratchet_header(),
+            &crypto,
+        )
         .unwrap();
 
     let mut bob_svc = MessageService::new(256);
@@ -121,7 +155,10 @@ fn replay_attack_detected() {
     bob_svc.mark_established(&alice);
 
     assert!(bob_svc.process_received(&envelope).is_ok());
-    assert!(bob_svc.process_received(&envelope).is_err(), "replay should be rejected");
+    assert!(
+        bob_svc.process_received(&envelope).is_err(),
+        "replay should be rejected"
+    );
 }
 
 #[test]
@@ -139,7 +176,14 @@ fn sequence_numbers_auto_increment() {
         .map(|i| {
             let padded = msg_svc.pad_message(format!("msg {i}").as_bytes(), &crypto);
             msg_svc
-                .prepare_envelope(&alice, &bob, room.id(), padded, mock_ratchet_header(), &crypto)
+                .prepare_envelope(
+                    &alice,
+                    &bob,
+                    room.id(),
+                    padded,
+                    mock_ratchet_header(),
+                    &crypto,
+                )
                 .unwrap()
                 .sequence_number()
         })
@@ -153,7 +197,14 @@ fn padding_preserves_message_content() {
     let crypto = MockCrypto;
     let msg_svc = MessageService::new(256);
 
-    let messages: Vec<&[u8]> = vec![b"", b"a", b"Hello, World!", &[0u8; 255], &[0u8; 256], &[0u8; 1000]];
+    let messages: Vec<&[u8]> = vec![
+        b"",
+        b"a",
+        b"Hello, World!",
+        &[0u8; 255],
+        &[0u8; 256],
+        &[0u8; 1000],
+    ];
 
     for msg in messages {
         let padded = msg_svc.pad_message(msg, &crypto);
@@ -180,7 +231,14 @@ fn message_stored_and_retrieved_from_memory_backlog() {
     for i in 1..=3 {
         let padded = msg_svc.pad_message(format!("message {i}").as_bytes(), &crypto);
         let envelope = msg_svc
-            .prepare_envelope(&alice, &bob, room.id(), padded, mock_ratchet_header(), &crypto)
+            .prepare_envelope(
+                &alice,
+                &bob,
+                room.id(),
+                padded,
+                mock_ratchet_header(),
+                &crypto,
+            )
             .unwrap();
         storage.store_message(&bob, &envelope).unwrap();
     }
@@ -204,7 +262,14 @@ fn message_envelope_survives_full_wire_round_trip() {
 
     let padded = msg_svc.pad_message(b"wire test", &crypto);
     let _envelope = msg_svc
-        .prepare_envelope(&alice, &bob, room.id(), padded.clone(), mock_ratchet_header(), &crypto)
+        .prepare_envelope(
+            &alice,
+            &bob,
+            room.id(),
+            padded.clone(),
+            mock_ratchet_header(),
+            &crypto,
+        )
         .unwrap();
 
     let frame = Frame::new(message_types::ROOM_MESSAGE, padded.clone());

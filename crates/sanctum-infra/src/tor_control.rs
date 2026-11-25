@@ -96,9 +96,12 @@ impl TorController {
         // ── Step 1: Connect to control port ──
         let stream = TcpStream::connect(&self.config.control_addr)
             .await
-            .map_err(|e| SanctumError::TorUnavailable(
-                format!("cannot connect to control port {}: {e}", self.config.control_addr),
-            ))?;
+            .map_err(|e| {
+                SanctumError::TorUnavailable(format!(
+                    "cannot connect to control port {}: {e}",
+                    self.config.control_addr
+                ))
+            })?;
 
         let mut reader = BufReader::new(stream);
 
@@ -120,9 +123,9 @@ impl TorController {
                 break;
             }
             if line.starts_with("5") {
-                return Err(SanctumError::TorUnavailable(
-                    format!("PROTOCOLINFO failed: {line}"),
-                ));
+                return Err(SanctumError::TorUnavailable(format!(
+                    "PROTOCOLINFO failed: {line}"
+                )));
             }
         }
 
@@ -162,9 +165,7 @@ impl TorController {
                         authenticated = true;
                         break;
                     } else {
-                        last_error = format!(
-                            "cookie auth rejected for {cookie_path}: {response}"
-                        );
+                        last_error = format!("cookie auth rejected for {cookie_path}: {response}");
                         warn!("[tor] {last_error}");
                     }
                 }
@@ -229,13 +230,14 @@ impl TorController {
         }
 
         let reader = self.control_stream.as_mut().ok_or_else(|| {
-            SanctumError::TorUnavailable("not connected to control port — call connect() first".into())
+            SanctumError::TorUnavailable(
+                "not connected to control port — call connect() first".into(),
+            )
         })?;
 
         let cmd = format!(
             "ADD_ONION NEW:ED25519-V3 Port={},127.0.0.1:{} Flags=DiscardPK\r\n",
-            self.config.hidden_service_port,
-            self.config.local_port,
+            self.config.hidden_service_port, self.config.local_port,
         );
 
         write_cmd(reader, &cmd).await?;
@@ -244,16 +246,13 @@ impl TorController {
         loop {
             let line = read_response(reader).await?;
             if line.starts_with("250-ServiceID=") {
-                service_id = line
-                    .trim_start_matches("250-ServiceID=")
-                    .trim()
-                    .to_string();
+                service_id = line.trim_start_matches("250-ServiceID=").trim().to_string();
             } else if line.starts_with("250 ") {
                 break;
             } else if line.starts_with("5") {
-                return Err(SanctumError::TorUnavailable(
-                    format!("ADD_ONION failed: {line}"),
-                ));
+                return Err(SanctumError::TorUnavailable(format!(
+                    "ADD_ONION failed: {line}"
+                )));
             }
         }
 
@@ -270,16 +269,20 @@ impl TorController {
             service_id,
         };
 
-        info!("[tor] hidden service created: {onion_address}:{}", self.config.hidden_service_port);
+        info!(
+            "[tor] hidden service created: {onion_address}:{}",
+            self.config.hidden_service_port
+        );
         self.active_service = Some(hs.clone());
         Ok(hs)
     }
 
     /// Destroy the active hidden service.
     pub async fn destroy_hidden_service(&mut self) -> Result<(), SanctumError> {
-        let hs = self.active_service.take().ok_or_else(|| {
-            SanctumError::TorUnavailable("no active hidden service".into())
-        })?;
+        let hs = self
+            .active_service
+            .take()
+            .ok_or_else(|| SanctumError::TorUnavailable("no active hidden service".into()))?;
 
         if self.mock {
             info!("[tor] mock: hidden service destroyed");
@@ -327,10 +330,7 @@ impl TorController {
 // Helpers
 // ============================================================
 
-async fn write_cmd(
-    reader: &mut BufReader<TcpStream>,
-    cmd: &str,
-) -> Result<(), SanctumError> {
+async fn write_cmd(reader: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), SanctumError> {
     reader
         .get_mut()
         .write_all(cmd.as_bytes())
@@ -344,9 +344,7 @@ async fn write_cmd(
     Ok(())
 }
 
-async fn read_response(
-    reader: &mut BufReader<TcpStream>,
-) -> Result<String, SanctumError> {
+async fn read_response(reader: &mut BufReader<TcpStream>) -> Result<String, SanctumError> {
     let mut line = String::new();
     reader
         .read_line(&mut line)
@@ -369,8 +367,16 @@ fn generate_mock_onion() -> String {
             let hi = (b >> 4) & 0x0F;
             let lo = b & 0x0F;
             vec![
-                if hi < 10 { (b'a' + hi) as char } else { (b'2' + hi - 10) as char },
-                if lo < 10 { (b'a' + lo) as char } else { (b'2' + lo - 10) as char },
+                if hi < 10 {
+                    (b'a' + hi) as char
+                } else {
+                    (b'2' + hi - 10) as char
+                },
+                if lo < 10 {
+                    (b'a' + lo) as char
+                } else {
+                    (b'2' + lo - 10) as char
+                },
             ]
         })
         .take(56)

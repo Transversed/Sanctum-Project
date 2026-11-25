@@ -3,10 +3,10 @@
 //! This is the PRIMARY user experience of Sanctum.
 
 use crate::config::Config;
+use sanctum_app::chat_session::{ChatSession, SessionConfig};
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
 use sanctum_domain::entities::room::RoomMode;
 use sanctum_domain::events::ChatEvent;
-use sanctum_app::chat_session::{ChatSession, SessionConfig};
 
 use sanctum_infra::terminal_renderer::TerminalLineRenderer;
 use tokio::sync::broadcast;
@@ -27,7 +27,8 @@ pub async fn run(
         .unwrap_or_else(|_| DisplayAlias::new("anon").unwrap());
 
     let session_config = SessionConfig {
-        room_id: room_id.parse::<sanctum_domain::entities::room::RoomId>()
+        room_id: room_id
+            .parse::<sanctum_domain::entities::room::RoomId>()
             .unwrap_or_else(|_| sanctum_domain::entities::room::RoomId::new()),
         room_name: format!("room-{}", &room_id[..8.min(room_id.len())]),
         room_mode: RoomMode::Ephemeral,

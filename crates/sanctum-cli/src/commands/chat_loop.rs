@@ -7,7 +7,9 @@ use sanctum_infra::noise_transport::NoiseTransport;
 use sanctum_infra::proto_codec::{self, pb, WireMessage};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::{
+    Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::terminal::{self, ClearType};
 use crossterm::{cursor, execute, queue};
 use std::collections::HashMap;
@@ -22,7 +24,11 @@ pub struct ChatConfig {
 
 impl Default for ChatConfig {
     fn default() -> Self {
-        Self { room_name: "room".into(), room_mode: "ephemeral".into(), tor_connected: false }
+        Self {
+            room_name: "room".into(),
+            room_mode: "ephemeral".into(),
+            tor_connected: false,
+        }
     }
 }
 
@@ -34,7 +40,16 @@ pub async fn run(
     is_host: bool,
     shutdown: CancellationToken,
 ) {
-    run_with_config(transport, local_fp, local_alias, e2e_keys, is_host, shutdown, ChatConfig::default()).await;
+    run_with_config(
+        transport,
+        local_fp,
+        local_alias,
+        e2e_keys,
+        is_host,
+        shutdown,
+        ChatConfig::default(),
+    )
+    .await;
 }
 
 pub async fn run_with_config(
@@ -64,7 +79,15 @@ pub async fn run_with_config(
         // Scroll region: line 1 (below status bar) to line rows-2 (above prompt)
         let _ = write!(out, "\x1b[2;{}r", rows - 1);
         let _ = out.flush();
-        draw_status(&mut out, &cfg.room_name, &cfg.room_mode, peer_count, cfg.tor_connected, false, cols);
+        draw_status(
+            &mut out,
+            &cfg.room_name,
+            &cfg.room_mode,
+            peer_count,
+            cfg.tor_connected,
+            false,
+            cols,
+        );
         draw_prompt(&mut out, "", rows);
     }
 
@@ -83,7 +106,9 @@ pub async fn run_with_config(
                             let _ = key_tx.blocking_send(KeyEvent::Quit);
                             break;
                         }
-                        if !t.is_empty() { let _ = key_tx.blocking_send(KeyEvent::Line(t)); }
+                        if !t.is_empty() {
+                            let _ = key_tx.blocking_send(KeyEvent::Line(t));
+                        }
                     }
                     Err(_) => break,
                 }
@@ -93,13 +118,23 @@ pub async fn run_with_config(
         loop {
             match event::read() {
                 Ok(Event::Key(k)) => match k.code {
-                    KeyCode::Enter => { let _ = key_tx.blocking_send(KeyEvent::Enter); }
-                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let _ = key_tx.blocking_send(KeyEvent::Quit); break;
+                    KeyCode::Enter => {
+                        let _ = key_tx.blocking_send(KeyEvent::Enter);
                     }
-                    KeyCode::Esc => { let _ = key_tx.blocking_send(KeyEvent::Quit); break; }
-                    KeyCode::Char(c) => { let _ = key_tx.blocking_send(KeyEvent::Char(c)); }
-                    KeyCode::Backspace => { let _ = key_tx.blocking_send(KeyEvent::Backspace); }
+                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let _ = key_tx.blocking_send(KeyEvent::Quit);
+                        break;
+                    }
+                    KeyCode::Esc => {
+                        let _ = key_tx.blocking_send(KeyEvent::Quit);
+                        break;
+                    }
+                    KeyCode::Char(c) => {
+                        let _ = key_tx.blocking_send(KeyEvent::Char(c));
+                    }
+                    KeyCode::Backspace => {
+                        let _ = key_tx.blocking_send(KeyEvent::Backspace);
+                    }
                     _ => {}
                 },
                 Ok(_) => {}
@@ -201,7 +236,12 @@ pub async fn run_with_config(
         let _ = terminal::disable_raw_mode();
         let _ = execute!(out, cursor::Show, cursor::MoveTo(0, rows.saturating_sub(1)));
     }
-    let _ = write!(out, "\n{}session terminée. Secrets purgés.{}\n", SetForegroundColor(Color::DarkYellow), ResetColor);
+    let _ = write!(
+        out,
+        "\n{}session terminée. Secrets purgés.{}\n",
+        SetForegroundColor(Color::DarkYellow),
+        ResetColor
+    );
     let _ = out.flush();
     transport.shutdown().await;
 }
@@ -218,21 +258,48 @@ enum KeyEvent {
 
 // ── Drawing ──
 
-fn draw_status(out: &mut Stdout, room: &str, mode: &str, peers: u32, tor: bool, e2e: bool, cols: u16) {
+fn draw_status(
+    out: &mut Stdout,
+    room: &str,
+    mode: &str,
+    peers: u32,
+    tor: bool,
+    e2e: bool,
+    cols: u16,
+) {
     let tor_s = if tor { "✓" } else { "✗" };
     let e2e_s = if e2e { "✓" } else { "─" };
     let bar = format!(" SANCTUM │ #{room} │ {mode} │ {peers} peers │ Tor: {tor_s} │ E2E: {e2e_s} ");
     let w = cols as usize;
     let padded = format!("{:<w$}", bar);
     let _ = queue!(out, cursor::SavePosition, cursor::MoveTo(0, 0));
-    let _ = write!(out, "{}{}{}{}{}", SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White), SetAttribute(Attribute::Bold), padded, ResetColor);
+    let _ = write!(
+        out,
+        "{}{}{}{}{}",
+        SetBackgroundColor(Color::DarkGrey),
+        SetForegroundColor(Color::White),
+        SetAttribute(Attribute::Bold),
+        padded,
+        ResetColor
+    );
     let _ = queue!(out, cursor::RestorePosition);
     let _ = out.flush();
 }
 
 fn draw_prompt(out: &mut Stdout, input: &str, rows: u16) {
-    let _ = queue!(out, cursor::MoveTo(0, rows.saturating_sub(1)), terminal::Clear(ClearType::CurrentLine));
-    let _ = write!(out, "{}{}> {}{}", SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold), ResetColor, input);
+    let _ = queue!(
+        out,
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        terminal::Clear(ClearType::CurrentLine)
+    );
+    let _ = write!(
+        out,
+        "{}{}> {}{}",
+        SetForegroundColor(Color::Green),
+        SetAttribute(Attribute::Bold),
+        ResetColor,
+        input
+    );
     let _ = queue!(out, cursor::Show);
     let _ = out.flush();
 }
@@ -247,16 +314,30 @@ fn goto_msg(out: &mut Stdout, rows: u16) {
 fn write_msg(out: &mut Stdout, h: u64, min: u64, sender: &str, content: &str, is_own: bool) {
     let color = if is_own { Color::Green } else { Color::Cyan };
     let _ = write!(
-        out, "{}[{:02}:{:02}]{} {}{}{}{}: {}{}",
-        SetAttribute(Attribute::Dim), h, min, ResetColor,
-        SetForegroundColor(color), SetAttribute(Attribute::Bold), sender, ResetColor,
-        content, ResetColor,
+        out,
+        "{}[{:02}:{:02}]{} {}{}{}{}: {}{}",
+        SetAttribute(Attribute::Dim),
+        h,
+        min,
+        ResetColor,
+        SetForegroundColor(color),
+        SetAttribute(Attribute::Bold),
+        sender,
+        ResetColor,
+        content,
+        ResetColor,
     );
     let _ = out.flush();
 }
 
 fn write_sys(out: &mut Stdout, text: &str) {
-    let _ = write!(out, "{}{}{}", SetForegroundColor(Color::DarkYellow), text, ResetColor);
+    let _ = write!(
+        out,
+        "{}{}{}",
+        SetForegroundColor(Color::DarkYellow),
+        text,
+        ResetColor
+    );
     let _ = out.flush();
 }
 
@@ -265,11 +346,14 @@ fn write_sys(out: &mut Stdout, text: &str) {
 fn encrypt_msg(text: &str, e2e: &mut Option<E2eSession>) -> (Vec<u8>, Option<pb::RatchetHeader>) {
     if let Some(ref mut s) = e2e {
         match s.encrypt(text.as_bytes()) {
-            Ok((h, ct)) => (ct, Some(pb::RatchetHeader {
-                dh_public: h.dh_public.to_vec(),
-                previous_chain_length: h.prev_chain_len,
-                message_number: h.msg_num,
-            })),
+            Ok((h, ct)) => (
+                ct,
+                Some(pb::RatchetHeader {
+                    dh_public: h.dh_public.to_vec(),
+                    previous_chain_length: h.prev_chain_len,
+                    message_number: h.msg_num,
+                }),
+            ),
             Err(_) => (text.as_bytes().to_vec(), None),
         }
     } else {
@@ -277,20 +361,33 @@ fn encrypt_msg(text: &str, e2e: &mut Option<E2eSession>) -> (Vec<u8>, Option<pb:
     }
 }
 
-fn try_decrypt(m: &pb::RoomMessage, e2e: &mut Option<E2eSession>, keys: &Option<PeerPrivateKeys>) -> Option<String> {
+fn try_decrypt(
+    m: &pb::RoomMessage,
+    e2e: &mut Option<E2eSession>,
+    keys: &Option<PeerPrivateKeys>,
+) -> Option<String> {
     if let Some(ref mut s) = e2e {
         if let Some(ref rh) = m.ratchet_header {
             if rh.dh_public.len() == 32 {
                 let mut pk = [0u8; 32];
                 pk.copy_from_slice(&rh.dh_public);
-                let hdr = sanctum_crypto::ratchet::Header { dh_public: pk, prev_chain_len: rh.previous_chain_length, msg_num: rh.message_number };
-                return match s.decrypt(&hdr, &m.ciphertext) { Ok(pt) => Some(String::from_utf8_lossy(&pt).to_string()), Err(_) => None };
+                let hdr = sanctum_crypto::ratchet::Header {
+                    dh_public: pk,
+                    prev_chain_len: rh.previous_chain_length,
+                    msg_num: rh.message_number,
+                };
+                return match s.decrypt(&hdr, &m.ciphertext) {
+                    Ok(pt) => Some(String::from_utf8_lossy(&pt).to_string()),
+                    Err(_) => None,
+                };
             }
         }
         None
     } else if let Ok(init) = serde_json::from_slice::<InitialMessage>(&m.ciphertext) {
         if let Some(ref k) = keys {
-            if let Ok(session) = E2eSession::respond(k, &init) { *e2e = Some(session); }
+            if let Ok(session) = E2eSession::respond(k, &init) {
+                *e2e = Some(session);
+            }
         }
         None
     } else {
@@ -299,13 +396,22 @@ fn try_decrypt(m: &pb::RoomMessage, e2e: &mut Option<E2eSession>, keys: &Option<
 }
 
 fn alias_for<'a>(fp: &'a str, map: &'a HashMap<String, String>) -> String {
-    map.get(fp).cloned().unwrap_or_else(|| short(fp).to_string())
+    map.get(fp)
+        .cloned()
+        .unwrap_or_else(|| short(fp).to_string())
 }
 
 fn short(fp: &str) -> &str {
-    if fp.len() >= 8 { &fp[..8] } else { fp }
+    if fp.len() >= 8 {
+        &fp[..8]
+    } else {
+        fp
+    }
 }
 
 fn now_ts() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

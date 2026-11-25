@@ -1,9 +1,9 @@
 //! Key derivation: Argon2id (passphrase → master key) and HKDF-SHA256 (master → subkeys).
 
-use argon2::{Argon2, Algorithm, Params, Version};
+use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
-use sha2::Sha256;
 use sanctum_domain::SanctumError;
+use sha2::Sha256;
 
 /// Derive a 32-byte master key from a passphrase using Argon2id.
 ///
@@ -14,10 +14,7 @@ use sanctum_domain::SanctumError;
 /// - Memory: 64 MiB
 /// - Iterations: 3
 /// - Parallelism: 4
-pub fn derive_master_key(
-    passphrase: &[u8],
-    salt: &[u8],
-) -> Result<[u8; 32], SanctumError> {
+pub fn derive_master_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], SanctumError> {
     if salt.len() < 16 {
         return Err(SanctumError::MalformedMessage(
             "Argon2 salt must be >= 16 bytes".into(),

@@ -11,21 +11,45 @@ pub enum SanctumEvent {
     /// Client disconnected.
     ClientDisconnected { fingerprint: Fingerprint },
     /// Auth succeeded.
-    AuthSucceeded { fingerprint: Fingerprint, role: Role },
+    AuthSucceeded {
+        fingerprint: Fingerprint,
+        role: Role,
+    },
     /// Auth failed.
-    AuthFailed { fingerprint: Fingerprint, reason: String },
+    AuthFailed {
+        fingerprint: Fingerprint,
+        reason: String,
+    },
     /// Room created.
     RoomCreated { room_id: RoomId },
     /// Member joined.
-    MemberJoined { room_id: RoomId, fingerprint: Fingerprint },
+    MemberJoined {
+        room_id: RoomId,
+        fingerprint: Fingerprint,
+    },
     /// Member revoked.
-    MemberRevoked { room_id: RoomId, fingerprint: Fingerprint },
+    MemberRevoked {
+        room_id: RoomId,
+        fingerprint: Fingerprint,
+    },
     /// Message received by host.
-    MessageReceived { room_id: RoomId, sender: Fingerprint, seq: u64 },
+    MessageReceived {
+        room_id: RoomId,
+        sender: Fingerprint,
+        seq: u64,
+    },
     /// Message delivered to recipient.
-    MessageDelivered { room_id: RoomId, recipient: Fingerprint, seq: u64 },
+    MessageDelivered {
+        room_id: RoomId,
+        recipient: Fingerprint,
+        seq: u64,
+    },
     /// Backlog delivered.
-    BacklogDelivered { room_id: RoomId, recipient: Fingerprint, count: u32 },
+    BacklogDelivered {
+        room_id: RoomId,
+        recipient: Fingerprint,
+        count: u32,
+    },
     /// Ratchet re-keyed with peer.
     RatchetReKeyed { peer: Fingerprint },
     /// Backlog garbage-collected.
@@ -50,15 +74,31 @@ pub enum ChatEvent {
     /// Local outgoing message.
     OutgoingMessage { content: String, timestamp: u64 },
     /// Peer joining (X3DH in progress).
-    PeerJoining { fingerprint: Fingerprint, display: String },
+    PeerJoining {
+        fingerprint: Fingerprint,
+        display: String,
+    },
     /// Peer ready (X3DH complete).
-    PeerReady { fingerprint: Fingerprint, display: String },
+    PeerReady {
+        fingerprint: Fingerprint,
+        display: String,
+    },
     /// Peer left.
-    PeerLeft { fingerprint: Fingerprint, display: String },
+    PeerLeft {
+        fingerprint: Fingerprint,
+        display: String,
+    },
     /// Peer revoked.
-    PeerRevoked { fingerprint: Fingerprint, display: String },
+    PeerRevoked {
+        fingerprint: Fingerprint,
+        display: String,
+    },
     /// Connected to room.
-    Connected { room_id: RoomId, role: Role, peer_count: usize },
+    Connected {
+        room_id: RoomId,
+        role: Role,
+        peer_count: usize,
+    },
     /// Disconnected.
     Disconnected { reason: String },
     /// Backlog delivery starting.

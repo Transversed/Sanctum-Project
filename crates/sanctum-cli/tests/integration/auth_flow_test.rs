@@ -4,8 +4,8 @@
 
 use sanctum_app::auth_service::{AuthResponse, AuthService};
 use sanctum_domain::entities::member::Fingerprint;
+use sanctum_infra::codec::{self, message_types, Frame};
 use sanctum_infra::identity_pgp::IdentityAdapter;
-use sanctum_infra::codec::{self, Frame, message_types};
 use std::collections::HashSet;
 
 fn allowed_set(fps: &[&Fingerprint]) -> HashSet<Fingerprint> {
@@ -38,7 +38,10 @@ fn full_auth_challenge_response_with_identity_adapter() {
     };
 
     let result = auth_svc.verify_response(&challenge, &response, &allowed);
-    assert!(result.is_ok(), "auth should succeed for allowed fingerprint");
+    assert!(
+        result.is_ok(),
+        "auth should succeed for allowed fingerprint"
+    );
 }
 
 #[test]
@@ -139,5 +142,8 @@ fn auth_rate_limits_per_fingerprint() {
         display_alias: "attacker".into(),
     };
     let result = auth_svc.verify_response(&challenge, &response, &real_allowed);
-    assert!(result.is_err(), "should be rate-limited after 3 failed attempts");
+    assert!(
+        result.is_err(),
+        "should be rate-limited after 3 failed attempts"
+    );
 }

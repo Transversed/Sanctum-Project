@@ -65,18 +65,33 @@ pub enum WireMessage {
 /// Encode a typed WireMessage into a Frame ready for wire transmission.
 pub fn proto_encode(msg: &WireMessage) -> Result<Frame, SanctumError> {
     match msg {
-        WireMessage::HandshakeInit(m) => Ok(Frame::new(message_types::HANDSHAKE_INIT, encode_pb(m))),
-        WireMessage::HandshakeResp(m) => Ok(Frame::new(message_types::HANDSHAKE_RESP, encode_pb(m))),
-        WireMessage::AuthChallenge(m) => Ok(Frame::new(message_types::AUTH_CHALLENGE, encode_pb(m))),
+        WireMessage::HandshakeInit(m) => {
+            Ok(Frame::new(message_types::HANDSHAKE_INIT, encode_pb(m)))
+        }
+        WireMessage::HandshakeResp(m) => {
+            Ok(Frame::new(message_types::HANDSHAKE_RESP, encode_pb(m)))
+        }
+        WireMessage::AuthChallenge(m) => {
+            Ok(Frame::new(message_types::AUTH_CHALLENGE, encode_pb(m)))
+        }
         WireMessage::AuthResponse(m) => Ok(Frame::new(message_types::AUTH_RESPONSE, encode_pb(m))),
         WireMessage::AuthResult(m) => Ok(Frame::new(message_types::AUTH_RESULT, encode_pb(m))),
         WireMessage::RoomMessage(m) => Ok(Frame::new(message_types::ROOM_MESSAGE, encode_pb(m))),
         WireMessage::RoomControl(m) => Ok(Frame::new(message_types::ROOM_CONTROL, encode_pb(m))),
         WireMessage::PeerReady(m) => Ok(Frame::new(message_types::PEER_READY, encode_pb(m))),
-        WireMessage::RatchetKeyExchange(m) => Ok(Frame::new(message_types::RATCHET_KEY_EXCHANGE, encode_pb(m))),
-        WireMessage::PublishBundle(m) => Ok(Frame::new(message_types::PUBLISH_BUNDLE, encode_pb(m))),
-        WireMessage::RequestBundle(m) => Ok(Frame::new(message_types::REQUEST_BUNDLE, encode_pb(m))),
-        WireMessage::BundleResponse(m) => Ok(Frame::new(message_types::BUNDLE_RESPONSE, encode_pb(m))),
+        WireMessage::RatchetKeyExchange(m) => Ok(Frame::new(
+            message_types::RATCHET_KEY_EXCHANGE,
+            encode_pb(m),
+        )),
+        WireMessage::PublishBundle(m) => {
+            Ok(Frame::new(message_types::PUBLISH_BUNDLE, encode_pb(m)))
+        }
+        WireMessage::RequestBundle(m) => {
+            Ok(Frame::new(message_types::REQUEST_BUNDLE, encode_pb(m)))
+        }
+        WireMessage::BundleResponse(m) => {
+            Ok(Frame::new(message_types::BUNDLE_RESPONSE, encode_pb(m)))
+        }
         WireMessage::OPKDepleted(m) => Ok(Frame::new(message_types::OPK_DEPLETED, encode_pb(m))),
         WireMessage::RefreshOPK(m) => Ok(Frame::new(message_types::REFRESH_OPK, encode_pb(m))),
         WireMessage::BacklogStart(m) => Ok(Frame::new(message_types::BACKLOG_START, encode_pb(m))),
@@ -103,10 +118,14 @@ pub fn proto_decode(frame: &Frame) -> Result<WireMessage, SanctumError> {
         message_types::ROOM_MESSAGE => Ok(WireMessage::RoomMessage(decode_pb(&frame.payload)?)),
         message_types::ROOM_CONTROL => Ok(WireMessage::RoomControl(decode_pb(&frame.payload)?)),
         message_types::PEER_READY => Ok(WireMessage::PeerReady(decode_pb(&frame.payload)?)),
-        message_types::RATCHET_KEY_EXCHANGE => Ok(WireMessage::RatchetKeyExchange(decode_pb(&frame.payload)?)),
+        message_types::RATCHET_KEY_EXCHANGE => {
+            Ok(WireMessage::RatchetKeyExchange(decode_pb(&frame.payload)?))
+        }
         message_types::PUBLISH_BUNDLE => Ok(WireMessage::PublishBundle(decode_pb(&frame.payload)?)),
         message_types::REQUEST_BUNDLE => Ok(WireMessage::RequestBundle(decode_pb(&frame.payload)?)),
-        message_types::BUNDLE_RESPONSE => Ok(WireMessage::BundleResponse(decode_pb(&frame.payload)?)),
+        message_types::BUNDLE_RESPONSE => {
+            Ok(WireMessage::BundleResponse(decode_pb(&frame.payload)?))
+        }
         message_types::OPK_DEPLETED => Ok(WireMessage::OPKDepleted(decode_pb(&frame.payload)?)),
         message_types::REFRESH_OPK => Ok(WireMessage::RefreshOPK(decode_pb(&frame.payload)?)),
         message_types::BACKLOG_START => Ok(WireMessage::BacklogStart(decode_pb(&frame.payload)?)),
@@ -115,9 +134,9 @@ pub fn proto_decode(frame: &Frame) -> Result<WireMessage, SanctumError> {
         message_types::PING => Ok(WireMessage::Ping),
         message_types::PONG => Ok(WireMessage::Pong),
         message_types::ERROR => Ok(WireMessage::ProtocolError(decode_pb(&frame.payload)?)),
-        unknown => Err(SanctumError::MalformedMessage(
-            format!("unknown message type: 0x{unknown:02X}"),
-        )),
+        unknown => Err(SanctumError::MalformedMessage(format!(
+            "unknown message type: 0x{unknown:02X}"
+        ))),
     }
 }
 
@@ -231,14 +250,12 @@ mod tests {
                     backlog_max_age_hours: 72,
                     message_padding_block: 256,
                 }),
-                members: vec![
-                    pb::MemberInfo {
-                        fingerprint: "A".repeat(40),
-                        display_alias: "alice".into(),
-                        role: "owner".into(),
-                        joined_at: 1700000000,
-                    },
-                ],
+                members: vec![pb::MemberInfo {
+                    fingerprint: "A".repeat(40),
+                    display_alias: "alice".into(),
+                    role: "owner".into(),
+                    joined_at: 1700000000,
+                }],
                 bundles: vec![],
             }),
         });
@@ -270,14 +287,12 @@ mod tests {
         let frame = proto_encode(&msg).unwrap();
         let decoded = proto_decode(&frame).unwrap();
         match decoded {
-            WireMessage::RoomControl(c) => {
-                match c.action.unwrap() {
-                    pb::room_control::Action::RevokeMember(r) => {
-                        assert_eq!(r.fingerprint, "B".repeat(40));
-                    }
-                    _ => panic!("wrong action"),
+            WireMessage::RoomControl(c) => match c.action.unwrap() {
+                pb::room_control::Action::RevokeMember(r) => {
+                    assert_eq!(r.fingerprint, "B".repeat(40));
                 }
-            }
+                _ => panic!("wrong action"),
+            },
             _ => panic!("wrong type"),
         }
     }
@@ -332,9 +347,13 @@ mod tests {
 
     #[test]
     fn backlog_sequence() {
-        let start = proto_encode(&WireMessage::BacklogStart(pb::BacklogStart { count: 5 })).unwrap();
+        let start =
+            proto_encode(&WireMessage::BacklogStart(pb::BacklogStart { count: 5 })).unwrap();
         let end = proto_encode(&WireMessage::BacklogEnd).unwrap();
-        let ack = proto_encode(&WireMessage::BacklogAck(pb::BacklogAck { last_sequence: 42 })).unwrap();
+        let ack = proto_encode(&WireMessage::BacklogAck(pb::BacklogAck {
+            last_sequence: 42,
+        }))
+        .unwrap();
 
         assert_eq!(start.message_type, message_types::BACKLOG_START);
         assert_eq!(end.message_type, message_types::BACKLOG_END);
@@ -344,7 +363,10 @@ mod tests {
             WireMessage::BacklogStart(s) => assert_eq!(s.count, 5),
             _ => panic!("wrong type"),
         }
-        assert!(matches!(proto_decode(&end).unwrap(), WireMessage::BacklogEnd));
+        assert!(matches!(
+            proto_decode(&end).unwrap(),
+            WireMessage::BacklogEnd
+        ));
         match proto_decode(&ack).unwrap() {
             WireMessage::BacklogAck(a) => assert_eq!(a.last_sequence, 42),
             _ => panic!("wrong type"),

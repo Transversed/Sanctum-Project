@@ -6,8 +6,8 @@
 //! After the handshake, both sides get a `TransportState` for encrypting
 //! all further communication on the wire.
 
-use snow::{Builder, HandshakeState, TransportState};
 use sanctum_domain::SanctumError;
+use snow::{Builder, HandshakeState, TransportState};
 
 const NOISE_PATTERN: &str = "Noise_NK_25519_ChaChaPoly_SHA256";
 
@@ -44,10 +44,7 @@ pub fn initiator(remote_static_public: &[u8]) -> Result<HandshakeState, SanctumE
 /// Perform one step of the handshake: write a message.
 ///
 /// Returns the handshake message bytes to send to the peer.
-pub fn write_message(
-    state: &mut HandshakeState,
-    payload: &[u8],
-) -> Result<Vec<u8>, SanctumError> {
+pub fn write_message(state: &mut HandshakeState, payload: &[u8]) -> Result<Vec<u8>, SanctumError> {
     let mut buf = vec![0u8; 65535];
     let len = state
         .write_message(payload, &mut buf)
@@ -59,10 +56,7 @@ pub fn write_message(
 /// Perform one step of the handshake: read a message.
 ///
 /// Returns the decrypted payload from the peer.
-pub fn read_message(
-    state: &mut HandshakeState,
-    message: &[u8],
-) -> Result<Vec<u8>, SanctumError> {
+pub fn read_message(state: &mut HandshakeState, message: &[u8]) -> Result<Vec<u8>, SanctumError> {
     let mut buf = vec![0u8; 65535];
     let len = state
         .read_message(message, &mut buf)

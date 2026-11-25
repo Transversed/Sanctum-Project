@@ -29,7 +29,11 @@ impl IdentityAdapter {
         let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
         let verifying_key = signing_key.verifying_key();
         let fingerprint = derive_fingerprint(&verifying_key);
-        Self { signing_key, verifying_key, fingerprint }
+        Self {
+            signing_key,
+            verifying_key,
+            fingerprint,
+        }
     }
 
     /// Create from raw 32-byte secret key.
@@ -45,7 +49,11 @@ impl IdentityAdapter {
         arr.zeroize();
         let verifying_key = signing_key.verifying_key();
         let fingerprint = derive_fingerprint(&verifying_key);
-        Ok(Self { signing_key, verifying_key, fingerprint })
+        Ok(Self {
+            signing_key,
+            verifying_key,
+            fingerprint,
+        })
     }
 
     /// Load identity from ~/.sanctum/keys/
@@ -53,10 +61,12 @@ impl IdentityAdapter {
         let home = sanctum_home();
         let priv_path = home.join(KEY_DIR).join(PRIV_KEY_FILE);
 
-        let key_bytes = std::fs::read(&priv_path)
-            .map_err(|e| SanctumError::AuthFailed {
-                reason: format!("cannot read identity key at {}: {e}\nRun `sanctum init` first.", priv_path.display()),
-            })?;
+        let key_bytes = std::fs::read(&priv_path).map_err(|e| SanctumError::AuthFailed {
+            reason: format!(
+                "cannot read identity key at {}: {e}\nRun `sanctum init` first.",
+                priv_path.display()
+            ),
+        })?;
 
         Self::from_key(key_bytes)
     }
@@ -123,8 +133,8 @@ impl IdentityAdapter {
         let mut pub_bytes = [0u8; 32];
         pub_bytes.copy_from_slice(peer_pubkey);
 
-        let verifying_key = VerifyingKey::from_bytes(&pub_bytes)
-            .map_err(|_| SanctumError::InvalidSignature)?;
+        let verifying_key =
+            VerifyingKey::from_bytes(&pub_bytes).map_err(|_| SanctumError::InvalidSignature)?;
 
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(signature);
@@ -185,7 +195,8 @@ mod tests {
         let sig = alice.sign(data).unwrap();
         assert_eq!(sig.len(), 64); // Ed25519 signature
 
-        let valid = IdentityAdapter::verify_with_pubkey(&alice.public_key_bytes(), data, &sig).unwrap();
+        let valid =
+            IdentityAdapter::verify_with_pubkey(&alice.public_key_bytes(), data, &sig).unwrap();
         assert!(valid);
     }
 
@@ -194,9 +205,9 @@ mod tests {
         let alice = IdentityAdapter::generate();
         let sig = alice.sign(b"real data").unwrap();
 
-        let valid = IdentityAdapter::verify_with_pubkey(
-            &alice.public_key_bytes(), b"fake data", &sig,
-        ).unwrap();
+        let valid =
+            IdentityAdapter::verify_with_pubkey(&alice.public_key_bytes(), b"fake data", &sig)
+                .unwrap();
         assert!(!valid);
     }
 
@@ -206,9 +217,8 @@ mod tests {
         let bob = IdentityAdapter::generate();
 
         let sig = alice.sign(b"data").unwrap();
-        let valid = IdentityAdapter::verify_with_pubkey(
-            &bob.public_key_bytes(), b"data", &sig,
-        ).unwrap();
+        let valid =
+            IdentityAdapter::verify_with_pubkey(&bob.public_key_bytes(), b"data", &sig).unwrap();
         assert!(!valid);
     }
 

@@ -11,7 +11,9 @@ use sanctum_infra::invite_codec;
 #[derive(Subcommand)]
 pub enum RoomAction {
     List,
-    Members { room_id: String },
+    Members {
+        room_id: String,
+    },
     /// Generate an invite token for a member.
     Invite {
         /// PGP fingerprint of the invitee (40 hex chars).
@@ -32,7 +34,10 @@ pub enum RoomAction {
         #[arg(long, default_value = "24")]
         ttl_hours: u64,
     },
-    Revoke { room_id: String, fingerprint: String },
+    Revoke {
+        room_id: String,
+        fingerprint: String,
+    },
 }
 
 pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -42,35 +47,65 @@ pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std:
             Ok(())
         }
         RoomAction::Members { room_id } => {
-            println!("[sanctum] members of {}: (not connected)", &room_id[..8.min(room_id.len())]);
+            println!(
+                "[sanctum] members of {}: (not connected)",
+                &room_id[..8.min(room_id.len())]
+            );
             Ok(())
         }
-        RoomAction::Invite { fingerprint, room_onion, room_port, room_id, role, ttl_hours } => {
-            run_invite(&fingerprint, &room_onion, room_port, &room_id, &role, ttl_hours, config)
-        }
-        RoomAction::Revoke { room_id: _, fingerprint } => {
-            println!("[sanctum] revoking {}... (not implemented)", &fingerprint[..8.min(fingerprint.len())]);
+        RoomAction::Invite {
+            fingerprint,
+            room_onion,
+            room_port,
+            room_id,
+            role,
+            ttl_hours,
+        } => run_invite(
+            &fingerprint,
+            &room_onion,
+            room_port,
+            &room_id,
+            &role,
+            ttl_hours,
+            config,
+        ),
+        RoomAction::Revoke {
+            room_id: _,
+            fingerprint,
+        } => {
+            println!(
+                "[sanctum] revoking {}... (not implemented)",
+                &fingerprint[..8.min(fingerprint.len())]
+            );
             Ok(())
         }
     }
 }
 
 fn run_invite(
-    fingerprint: &str, room_onion: &str, room_port: u16,
-    room_id: &str, role: &str, ttl_hours: u64, _config: &Config,
+    fingerprint: &str,
+    room_onion: &str,
+    room_port: u16,
+    room_id: &str,
+    role: &str,
+    ttl_hours: u64,
+    _config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load our identity (inviter)
-    let identity = IdentityAdapter::load_from_disk().map_err(|e| {
-        format!("{e}\nRun `sanctum init` first.")
-    })?;
+    let identity =
+        IdentityAdapter::load_from_disk().map_err(|e| format!("{e}\nRun `sanctum init` first."))?;
     let inviter_fp = identity.fingerprint().clone();
 
-    let invited_fp = Fingerprint::new(fingerprint)
-        .map_err(|e| format!("invalid fingerprint: {e}"))?;
+    let invited_fp =
+        Fingerprint::new(fingerprint).map_err(|e| format!("invalid fingerprint: {e}"))?;
 
-    let member_role = match role { "admin" => Role::Admin, _ => Role::Member };
+    let member_role = match role {
+        "admin" => Role::Admin,
+        _ => Role::Member,
+    };
 
-    let rid = room_id.parse::<RoomId>()
+    let rid = room_id
+        .parse::<RoomId>()
         .map_err(|e| format!("invalid room ID: {e}"))?;
 
     // Read host Noise public key

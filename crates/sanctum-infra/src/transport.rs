@@ -119,7 +119,7 @@ impl InProcessTransport {
         let id_b = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
 
         let a = Self {
-            tx: tx_b, // A sends to B's receiver
+            tx: tx_b,                          // A sends to B's receiver
             rx: tokio::sync::Mutex::new(rx_a), // A reads from A's receiver
             info: ConnectionInfo {
                 id: id_a,

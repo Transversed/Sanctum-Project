@@ -56,11 +56,16 @@ impl UiPort for TerminalLineRenderer {
             std::thread::spawn(move || {
                 let mut line = String::new();
                 match std::io::stdin().read_line(&mut line) {
-                    Ok(_) => { let _ = tx.send(Ok(line)); }
-                    Err(e) => { let _ = tx.send(Err(SanctumError::ConnectionLost(e.to_string()))); }
+                    Ok(_) => {
+                        let _ = tx.send(Ok(line));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(SanctumError::ConnectionLost(e.to_string())));
+                    }
                 }
             });
-            rx.await.unwrap_or_else(|_| Err(SanctumError::ConnectionLost("input cancelled".into())))
+            rx.await
+                .unwrap_or_else(|_| Err(SanctumError::ConnectionLost("input cancelled".into())))
         }
     }
 
@@ -176,8 +181,12 @@ impl UiPort for NullUiAdapter {
     fn print_backlog_start(&self, _: u32) {}
     fn print_backlog_end(&self) {}
     fn update_status(&self, _: &StatusInfo) {}
-    fn init(&self) -> Result<(), SanctumError> { Ok(()) }
-    fn cleanup(&self) -> Result<(), SanctumError> { Ok(()) }
+    fn init(&self) -> Result<(), SanctumError> {
+        Ok(())
+    }
+    fn cleanup(&self) -> Result<(), SanctumError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

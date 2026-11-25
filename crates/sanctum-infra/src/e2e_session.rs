@@ -15,7 +15,6 @@ use sanctum_crypto::x3dh::{self, X25519Keypair};
 use sanctum_domain::errors::SanctumError;
 use serde::{Deserialize, Serialize};
 
-
 /// The initial message sent from Alice to Bob to establish E2E.
 /// Bob needs this (plus his own keys) to derive the same shared secret.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,10 +104,8 @@ impl E2eSession {
         )?;
 
         // Initialize Double Ratchet (Alice side)
-        let ratchet = RatchetState::init_alice(
-            x3dh_result.shared_secret,
-            bob_public.signed_prekey_pub,
-        )?;
+        let ratchet =
+            RatchetState::init_alice(x3dh_result.shared_secret, bob_public.signed_prekey_pub)?;
 
         let session = Self {
             ratchet,
@@ -169,11 +166,7 @@ impl E2eSession {
     }
 
     /// Decrypt a received message.
-    pub fn decrypt(
-        &mut self,
-        header: &Header,
-        ciphertext: &[u8],
-    ) -> Result<Vec<u8>, SanctumError> {
+    pub fn decrypt(&mut self, header: &Header, ciphertext: &[u8]) -> Result<Vec<u8>, SanctumError> {
         self.ratchet.decrypt(header, ciphertext)
     }
 
@@ -192,8 +185,7 @@ mod tests {
         let bob_keys = PeerPrivateKeys::generate(3);
         let bob_public = bob_keys.public_keys();
 
-        let (alice_session, initial_msg) =
-            E2eSession::initiate(&alice_keys, &bob_public).unwrap();
+        let (alice_session, initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
         let bob_session = E2eSession::respond(&bob_keys, &initial_msg).unwrap();
 
         (alice_session, bob_session)
@@ -279,8 +271,7 @@ mod tests {
         let eve_keys = PeerPrivateKeys::generate(3);
         let bob_public = bob_keys.public_keys();
 
-        let (mut alice, _initial_msg) =
-            E2eSession::initiate(&alice_keys, &bob_public).unwrap();
+        let (mut alice, _initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
 
         // Alice encrypts for Bob
         let (h, ct) = alice.encrypt(b"secret for Bob").unwrap();
@@ -291,7 +282,10 @@ mod tests {
         let mut eve = E2eSession::respond(&eve_keys, &eve_initial).unwrap();
 
         let result = eve.decrypt(&h, &ct);
-        assert!(result.is_err(), "Eve should not be able to decrypt Bob's messages");
+        assert!(
+            result.is_err(),
+            "Eve should not be able to decrypt Bob's messages"
+        );
     }
 
     #[test]
@@ -301,8 +295,7 @@ mod tests {
         let bob_public = bob_keys.public_keys();
         assert!(bob_public.one_time_prekeys.is_empty());
 
-        let (mut alice, initial_msg) =
-            E2eSession::initiate(&alice_keys, &bob_public).unwrap();
+        let (mut alice, initial_msg) = E2eSession::initiate(&alice_keys, &bob_public).unwrap();
         assert!(initial_msg.opk_index.is_none());
 
         let mut bob = E2eSession::respond(&bob_keys, &initial_msg).unwrap();

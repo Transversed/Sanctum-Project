@@ -134,46 +134,122 @@ pub struct UiConfig {
 }
 
 // Defaults
-fn default_alias() -> String { "anon".into() }
-fn default_control_port() -> u16 { 9051 }
-fn default_control_auth() -> String { "cookie".into() }
-fn default_socks_port() -> u16 { 9050 }
-fn default_ping_interval() -> u64 { 60 }
-fn default_timeout() -> u64 { 180 }
-fn default_mode() -> String { "ephemeral".into() }
-fn default_listen_port() -> u16 { 9738 }
-fn default_max_connections() -> u16 { 20 }
-fn default_data_dir() -> String { "~/.sanctum/data".into() }
-fn default_db_max_size() -> u32 { 256 }
-fn default_log_level() -> String { "off".into() }
-fn default_log_output() -> String { "stdout".into() }
-fn default_true() -> bool { true }
-fn default_backlog_display() -> u32 { 50 }
-fn default_timestamp_format() -> String { "%H:%M".into() }
+fn default_alias() -> String {
+    "anon".into()
+}
+fn default_control_port() -> u16 {
+    9051
+}
+fn default_control_auth() -> String {
+    "cookie".into()
+}
+fn default_socks_port() -> u16 {
+    9050
+}
+fn default_ping_interval() -> u64 {
+    60
+}
+fn default_timeout() -> u64 {
+    180
+}
+fn default_mode() -> String {
+    "ephemeral".into()
+}
+fn default_listen_port() -> u16 {
+    9738
+}
+fn default_max_connections() -> u16 {
+    20
+}
+fn default_data_dir() -> String {
+    "~/.sanctum/data".into()
+}
+fn default_db_max_size() -> u32 {
+    256
+}
+fn default_log_level() -> String {
+    "off".into()
+}
+fn default_log_output() -> String {
+    "stdout".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_backlog_display() -> u32 {
+    50
+}
+fn default_timestamp_format() -> String {
+    "%H:%M".into()
+}
 
 impl Default for IdentityConfig {
-    fn default() -> Self { Self { pgp_key_id: String::new(), alias: default_alias() } }
+    fn default() -> Self {
+        Self {
+            pgp_key_id: String::new(),
+            alias: default_alias(),
+        }
+    }
 }
 impl Default for TorConfig {
-    fn default() -> Self { Self { control_port: default_control_port(), control_auth: default_control_auth(), socks_port: default_socks_port() } }
+    fn default() -> Self {
+        Self {
+            control_port: default_control_port(),
+            control_auth: default_control_auth(),
+            socks_port: default_socks_port(),
+        }
+    }
 }
 impl Default for NetworkConfig {
-    fn default() -> Self { Self { ping_interval: default_ping_interval(), timeout: default_timeout() } }
+    fn default() -> Self {
+        Self {
+            ping_interval: default_ping_interval(),
+            timeout: default_timeout(),
+        }
+    }
 }
 impl Default for HostConfig {
-    fn default() -> Self { Self { default_mode: default_mode(), listen_port: default_listen_port(), max_connections: default_max_connections() } }
+    fn default() -> Self {
+        Self {
+            default_mode: default_mode(),
+            listen_port: default_listen_port(),
+            max_connections: default_max_connections(),
+        }
+    }
 }
 impl Default for StorageConfig {
-    fn default() -> Self { Self { data_dir: default_data_dir(), db_max_size_mb: default_db_max_size() } }
+    fn default() -> Self {
+        Self {
+            data_dir: default_data_dir(),
+            db_max_size_mb: default_db_max_size(),
+        }
+    }
 }
 impl Default for LoggingConfig {
-    fn default() -> Self { Self { level: default_log_level(), output: default_log_output() } }
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            output: default_log_output(),
+        }
+    }
 }
 impl Default for ChatConfig {
-    fn default() -> Self { Self { auto_chat_on_join: true, backlog_display: default_backlog_display(), timestamp_format: default_timestamp_format(), show_system_events: true } }
+    fn default() -> Self {
+        Self {
+            auto_chat_on_join: true,
+            backlog_display: default_backlog_display(),
+            timestamp_format: default_timestamp_format(),
+            show_system_events: true,
+        }
+    }
 }
 impl Default for UiConfig {
-    fn default() -> Self { Self { banner: true, color: true } }
+    fn default() -> Self {
+        Self {
+            banner: true,
+            color: true,
+        }
+    }
 }
 
 #[allow(clippy::derivable_impls)]
@@ -195,17 +271,13 @@ impl Default for Config {
 impl Config {
     /// Load config from file, falling back to defaults.
     pub fn load(path: Option<&str>) -> Self {
-        let config_path = path
-            .map(PathBuf::from)
-            .unwrap_or_else(default_config_path);
+        let config_path = path.map(PathBuf::from).unwrap_or_else(default_config_path);
 
         match std::fs::read_to_string(&config_path) {
-            Ok(contents) => {
-                toml::from_str(&contents).unwrap_or_else(|e| {
-                    eprintln!("[sanctum] warning: failed to parse config: {e}");
-                    Config::default()
-                })
-            }
+            Ok(contents) => toml::from_str(&contents).unwrap_or_else(|e| {
+                eprintln!("[sanctum] warning: failed to parse config: {e}");
+                Config::default()
+            }),
             Err(_) => Config::default(),
         }
     }
@@ -220,9 +292,12 @@ impl Config {
     /// Resolve data directory (expand ~).
     #[allow(dead_code)]
     pub fn data_dir(&self) -> PathBuf {
-        let dir = self.storage.data_dir.replace('~', &dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .to_string_lossy());
+        let dir = self.storage.data_dir.replace(
+            '~',
+            &dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .to_string_lossy(),
+        );
         PathBuf::from(dir)
     }
 }

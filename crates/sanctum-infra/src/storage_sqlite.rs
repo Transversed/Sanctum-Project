@@ -22,8 +22,7 @@ pub struct SqliteStorageAdapter {
 impl SqliteStorageAdapter {
     /// Open or create a SQLite database at the given path.
     pub fn open(path: &Path) -> Result<Self, SanctumError> {
-        let conn = Connection::open(path)
-            .map_err(|e| SanctumError::StorageError(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| SanctumError::StorageError(e.to_string()))?;
 
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
             .map_err(|e| SanctumError::StorageError(e.to_string()))?;
@@ -35,8 +34,8 @@ impl SqliteStorageAdapter {
 
     /// Open an in-memory database (for testing).
     pub fn open_in_memory() -> Result<Self, SanctumError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| SanctumError::StorageError(e.to_string()))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| SanctumError::StorageError(e.to_string()))?;
 
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| SanctumError::StorageError(e.to_string()))?;
@@ -200,9 +199,7 @@ impl SqliteStorageAdapter {
         let rows = stmt
             .query_map(
                 params![room_id.as_str(), recipient_hash, since_seq as i64],
-                |row| {
-                    Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Vec<u8>>(1)?))
-                },
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Vec<u8>>(1)?)),
             )
             .map_err(|e| SanctumError::StorageError(e.to_string()))?;
 
@@ -230,11 +227,7 @@ impl SqliteStorageAdapter {
     }
 
     /// Purge excess messages per room (keep newest N).
-    pub fn purge_excess(
-        &self,
-        room_id: &RoomId,
-        max_messages: u32,
-    ) -> Result<u64, SanctumError> {
+    pub fn purge_excess(&self, room_id: &RoomId, max_messages: u32) -> Result<u64, SanctumError> {
         let deleted = self
             .conn
             .execute(
@@ -288,11 +281,7 @@ impl SqliteStorageAdapter {
     }
 
     /// Load a key.
-    pub fn load_key(
-        &self,
-        key_type: &str,
-        key_id: &str,
-    ) -> Result<Option<Vec<u8>>, SanctumError> {
+    pub fn load_key(&self, key_type: &str, key_id: &str) -> Result<Option<Vec<u8>>, SanctumError> {
         let mut stmt = self
             .conn
             .prepare("SELECT data FROM keys WHERE key_type = ?1 AND key_id = ?2")
@@ -376,9 +365,15 @@ mod tests {
         // Need a room first (FK constraint)
         store.store_room(&room_id, b"room", 0).unwrap();
 
-        store.store_message(&room_id, &recipient, 1, b"msg1", 1000).unwrap();
-        store.store_message(&room_id, &recipient, 2, b"msg2", 1001).unwrap();
-        store.store_message(&room_id, &recipient, 3, b"msg3", 1002).unwrap();
+        store
+            .store_message(&room_id, &recipient, 1, b"msg1", 1000)
+            .unwrap();
+        store
+            .store_message(&room_id, &recipient, 2, b"msg2", 1001)
+            .unwrap();
+        store
+            .store_message(&room_id, &recipient, 3, b"msg3", 1002)
+            .unwrap();
 
         let backlog = store.fetch_backlog(&room_id, &recipient, 1).unwrap();
         assert_eq!(backlog.len(), 2); // seq 2, 3
@@ -394,13 +389,17 @@ mod tests {
         store.store_room(&room_id, b"room", 0).unwrap();
 
         // Store message with old timestamp
-        store.store_message(&room_id, &recipient, 1, b"old", 100).unwrap();
+        store
+            .store_message(&room_id, &recipient, 1, b"old", 100)
+            .unwrap();
         // Store message with recent timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        store.store_message(&room_id, &recipient, 2, b"new", now).unwrap();
+        store
+            .store_message(&room_id, &recipient, 2, b"new", now)
+            .unwrap();
 
         let purged = store.purge_expired(3600).unwrap(); // 1h max age
         assert_eq!(purged, 1);
@@ -413,7 +412,9 @@ mod tests {
     #[test]
     fn store_and_load_key() {
         let store = SqliteStorageAdapter::open_in_memory().unwrap();
-        store.store_key("identity", "ik_001", b"secret", 1000, None).unwrap();
+        store
+            .store_key("identity", "ik_001", b"secret", 1000, None)
+            .unwrap();
         let loaded = store.load_key("identity", "ik_001").unwrap().unwrap();
         assert_eq!(loaded, b"secret");
     }
@@ -429,7 +430,9 @@ mod tests {
         let store = SqliteStorageAdapter::open_in_memory().unwrap();
         let room_id = RoomId::new();
         store.store_room(&room_id, b"room", 0).unwrap();
-        store.store_member(&room_id, &fp("AA"), b"member_data").unwrap();
+        store
+            .store_member(&room_id, &fp("AA"), b"member_data")
+            .unwrap();
         // No error = success (we don't have a load_member yet, just verifying FK works)
     }
 
