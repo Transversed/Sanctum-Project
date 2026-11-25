@@ -6,17 +6,19 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]
-sanctum-domain = { path = "../sanctum-domain" }
+sanctum-domain.workspace = true
 
 tokio = { workspace = true, features = ["sync", "time", "macros"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util.workspace = true
 tracing.workspace = true
 serde.workspace = true
 zeroize.workspace = true
-sha2 = "0.10"
-rand = "0.8"
+sha2.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

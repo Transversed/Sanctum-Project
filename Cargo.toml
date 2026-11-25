@@ -12,29 +12,60 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Sanctum Contributors"]
-license = "AGPL"
-repository = "https://github.com/sanctum-chat/sanctum"
-rust-version = "1.75"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Transversed/Sanctum-Project"
+rust-version = "1.89"
+publish = false
 
 [workspace.dependencies]
+# Internal crates
+sanctum-domain = { path = "crates/sanctum-domain" }
+sanctum-crypto = { path = "crates/sanctum-crypto" }
+sanctum-app = { path = "crates/sanctum-app" }
+sanctum-infra = { path = "crates/sanctum-infra" }
+
+# Crypto
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
 sha2 = "0.10"
+argon2 = "0.5"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+snow = "0.9"
 rand = "0.8"
-serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
+
+# Serialization / wire
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.12"
+prost-build = "0.12"
+base64 = "0.22"
 bytes = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
-crossterm = "0.27"
-tempfile = "3"  
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Async / runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt", "codec"] }
+
+# Storage
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+# CLI / terminal / config
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.27"
 toml = "0.8"
 dirs = "5"
+
+# Errors / logging
+thiserror = "2"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_json = "1"
+
+# Dev
+tempfile = "3"
 
 [profile.release]
 opt-level = 3
