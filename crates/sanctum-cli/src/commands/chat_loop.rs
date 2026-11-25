@@ -21,6 +21,9 @@ pub struct ChatConfig {
     pub room_name: String,
     pub room_mode: String,
     pub tor_connected: bool,
+    /// Allow sending without E2E (`--insecure-plaintext`). The host reads
+    /// everything. Off by default; temporary until E2E is wired (P3.5).
+    pub insecure_plaintext: bool,
 }
 
 impl Default for ChatConfig {
@@ -29,28 +32,9 @@ impl Default for ChatConfig {
             room_name: "room".into(),
             room_mode: "ephemeral".into(),
             tor_connected: false,
+            insecure_plaintext: false,
         }
     }
-}
-
-pub async fn run(
-    transport: NoiseTransport,
-    local_fp: Fingerprint,
-    local_alias: String,
-    e2e_keys: Option<PeerPrivateKeys>,
-    is_host: bool,
-    shutdown: CancellationToken,
-) {
-    run_with_config(
-        transport,
-        local_fp,
-        local_alias,
-        e2e_keys,
-        is_host,
-        shutdown,
-        ChatConfig::default(),
-    )
-    .await;
 }
 
 pub async fn run_with_config(
@@ -80,16 +64,17 @@ pub async fn run_with_config(
         // Scroll region: line 1 (below status bar) to line rows-2 (above prompt)
         let _ = write!(out, "\x1b[2;{}r", rows - 1);
         let _ = out.flush();
-        draw_status(
-            &mut out,
-            &cfg.room_name,
-            &cfg.room_mode,
-            peer_count,
-            cfg.tor_connected,
-            false,
-            cols,
-        );
+        draw_status(&mut out, &cfg, peer_count, false, cols);
         draw_prompt(&mut out, "", rows);
+    }
+    if cfg.insecure_plaintext {
+        if raw_ok {
+            goto_msg(&mut out, rows);
+        }
+        write_sys(
+            &mut out,
+            "⚠ --insecure-plaintext : vos messages partent NON CHIFFRÉS, l'hôte lit tout.",
+        );
     }
 
     // Keyboard channel
@@ -175,7 +160,7 @@ pub async fn run_with_config(
                                     if raw_ok { goto_msg(&mut out, rows); }
                                     write_sys(&mut out, &format!("── {} a rejoint la room ──", a));
                                     if raw_ok {
-                                        draw_status(&mut out, &cfg.room_name, &cfg.room_mode, peer_count, cfg.tor_connected, e2e_session.is_some(), cols);
+                                        draw_status(&mut out, &cfg, peer_count, e2e_session.is_some(), cols);
                                         draw_prompt(&mut out, &input_buf, rows);
                                     }
                                 }
@@ -209,7 +194,16 @@ pub async fn run_with_config(
                         if text.is_empty() { if raw_ok { draw_prompt(&mut out, &input_buf, rows); } continue; }
                         if text == "/exit" || text == "/quit" || text == "/q" { break; }
 
-                        let (ct, rh) = encrypt_msg(&text, &mut e2e_session);
+                        // I1: no silent plaintext. Refuse unless explicitly allowed.
+                        let (ct, rh) = match outgoing_payload(&text, &mut e2e_session, cfg.insecure_plaintext) {
+                            Ok(p) => p,
+                            Err(refusal) => {
+                                if raw_ok { goto_msg(&mut out, rows); }
+                                write_sys(&mut out, refusal.message());
+                                if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
+                                continue;
+                            }
+                        };
                         let frame = proto_codec::proto_encode(&WireMessage::RoomMessage(pb::RoomMessage {
                             sender_fingerprint: fp_str.clone(),
                             sequence_number: seq,
@@ -260,25 +254,31 @@ enum KeyEvent {
 
 // ── Drawing ──
 
-fn draw_status(
-    out: &mut Stdout,
-    room: &str,
-    mode: &str,
-    peers: u32,
-    tor: bool,
-    e2e: bool,
-    cols: u16,
-) {
-    let tor_s = if tor { "✓" } else { "✗" };
+fn draw_status(out: &mut Stdout, cfg: &ChatConfig, peers: u32, e2e: bool, cols: u16) {
+    let room = &cfg.room_name;
+    let mode = &cfg.room_mode;
+    let insecure_plaintext = cfg.insecure_plaintext;
+    let tor_s = if cfg.tor_connected { "✓" } else { "✗" };
     let e2e_s = if e2e { "✓" } else { "─" };
-    let bar = format!(" SANCTUM │ #{room} │ {mode} │ {peers} peers │ Tor: {tor_s} │ E2E: {e2e_s} ");
+    let warn = if insecure_plaintext && !e2e {
+        " │ ⚠ NON CHIFFRÉ — l'hôte lit tout"
+    } else {
+        ""
+    };
+    let bar =
+        format!(" SANCTUM │ #{room} │ {mode} │ {peers} peers │ Tor: {tor_s} │ E2E: {e2e_s}{warn} ");
+    let bg = if warn.is_empty() {
+        Color::DarkGrey
+    } else {
+        Color::DarkRed
+    };
     let w = cols as usize;
     let padded = format!("{:<w$}", bar);
     let _ = queue!(out, cursor::SavePosition, cursor::MoveTo(0, 0));
     let _ = write!(
         out,
         "{}{}{}{}{}",
-        SetBackgroundColor(Color::DarkGrey),
+        SetBackgroundColor(bg),
         SetForegroundColor(Color::White),
         SetAttribute(Attribute::Bold),
         padded,
@@ -349,21 +349,51 @@ fn write_sys(out: &mut Stdout, text: &str) {
 
 // ── Crypto helpers ──
 
-fn encrypt_msg(text: &str, e2e: &mut Option<E2eSession>) -> (Vec<u8>, Option<pb::RatchetHeader>) {
-    if let Some(ref mut s) = e2e {
-        match s.encrypt(text.as_bytes()) {
-            Ok((h, ct)) => (
+/// Why an outgoing message was not sent.
+#[derive(Debug, PartialEq, Eq)]
+enum SendRefusal {
+    /// No E2E session with the room and plaintext was not explicitly allowed.
+    NoE2eSession,
+    /// The ratchet failed to encrypt: never fall back to plaintext.
+    EncryptionFailed,
+}
+
+impl SendRefusal {
+    fn message(&self) -> &'static str {
+        match self {
+            SendRefusal::NoE2eSession => {
+                "✗ message NON envoyé : chiffrement de bout en bout non établi \
+                 (relancez avec --insecure-plaintext pour accepter que l'hôte lise tout)"
+            }
+            SendRefusal::EncryptionFailed => "✗ message NON envoyé : échec du chiffrement",
+        }
+    }
+}
+
+/// Build the payload of an outgoing message (invariant I1).
+///
+/// With an E2E session the text is encrypted; an encryption error is a
+/// refusal, never a plaintext fallback. Without a session, plaintext is
+/// only produced when the user passed `--insecure-plaintext`.
+fn outgoing_payload(
+    text: &str,
+    e2e: &mut Option<E2eSession>,
+    insecure_plaintext: bool,
+) -> Result<(Vec<u8>, Option<pb::RatchetHeader>), SendRefusal> {
+    match e2e {
+        Some(s) => match s.encrypt(text.as_bytes()) {
+            Ok((h, ct)) => Ok((
                 ct,
                 Some(pb::RatchetHeader {
                     dh_public: h.dh_public.to_vec(),
                     previous_chain_length: h.prev_chain_len,
                     message_number: h.msg_num,
                 }),
-            ),
-            Err(_) => (text.as_bytes().to_vec(), None),
-        }
-    } else {
-        (text.as_bytes().to_vec(), None)
+            )),
+            Err(_) => Err(SendRefusal::EncryptionFailed),
+        },
+        None if insecure_plaintext => Ok((text.as_bytes().to_vec(), None)),
+        None => Err(SendRefusal::NoE2eSession),
     }
 }
 
@@ -397,7 +427,11 @@ fn try_decrypt(
         }
         None
     } else {
-        Some(String::from_utf8_lossy(&m.ciphertext).to_string())
+        // A peer running with --insecure-plaintext: show it, clearly flagged.
+        Some(format!(
+            "⚠ [non chiffré] {}",
+            String::from_utf8_lossy(&m.ciphertext)
+        ))
     }
 }
 
@@ -420,4 +454,38 @@ fn now_ts() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sanctum_infra::e2e_session::PeerPrivateKeys;
+
+    #[test]
+    fn refuses_plaintext_by_default() {
+        let mut none: Option<E2eSession> = None;
+        assert_eq!(
+            outgoing_payload("secret", &mut none, false),
+            Err(SendRefusal::NoE2eSession)
+        );
+    }
+
+    #[test]
+    fn plaintext_only_with_explicit_flag() {
+        let mut none: Option<E2eSession> = None;
+        let (ct, header) = outgoing_payload("hello", &mut none, true).unwrap();
+        assert_eq!(ct, b"hello");
+        assert!(header.is_none());
+    }
+
+    #[test]
+    fn encrypts_when_session_exists_even_with_flag() {
+        let alice = PeerPrivateKeys::generate(1);
+        let bob = PeerPrivateKeys::generate(1);
+        let (session, _) = E2eSession::initiate(&alice, &bob.public_keys()).unwrap();
+        let mut s = Some(session);
+        let (ct, header) = outgoing_payload("hello", &mut s, true).unwrap();
+        assert_ne!(ct, b"hello");
+        assert!(header.is_some());
+    }
 }

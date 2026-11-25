@@ -2,7 +2,7 @@
 
 use crate::commands::chat_loop;
 use crate::config::Config;
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use sanctum_app::host_service::HostService;
 use sanctum_app::room_service::RoomService;
 use sanctum_domain::entities::member::DisplayAlias;
@@ -17,26 +17,41 @@ use sanctum_infra::tor_control::{TorConfig as InfraTorConfig, TorController};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+/// Arguments of `sanctum host create`.
+#[derive(Args)]
+pub struct CreateArgs {
+    /// Room name.
+    pub name: String,
+    /// Room mode. Only `ephemeral` is available in v0.1.1.
+    #[arg(long, default_value = "ephemeral")]
+    pub mode: String,
+    /// Local relay port (default from config).
+    #[arg(long)]
+    pub port: Option<u16>,
+    #[arg(long, default_value = "10")]
+    pub max_members: u16,
+    #[arg(long, default_value = "500")]
+    pub backlog_max: u32,
+    #[arg(long, default_value = "72")]
+    pub backlog_hours: u32,
+    /// Open the interactive chat as the owner.
+    #[arg(long)]
+    pub chat: bool,
+    /// Listen on 127.0.0.1 without creating a Tor hidden service.
+    #[arg(long)]
+    pub local: bool,
+    /// DANGER: allow sending unencrypted messages (the host reads them).
+    #[arg(long)]
+    pub insecure_plaintext: bool,
+}
+
 #[derive(Subcommand)]
 pub enum HostAction {
-    Create {
-        name: String,
-        #[arg(long, default_value = "ephemeral")]
-        mode: String,
-        #[arg(long)]
-        port: Option<u16>,
-        #[arg(long, default_value = "10")]
-        max_members: u16,
-        #[arg(long, default_value = "500")]
-        backlog_max: u32,
-        #[arg(long, default_value = "72")]
-        backlog_hours: u32,
-        #[arg(long)]
-        chat: bool,
-        #[arg(long)]
-        local: bool,
-    },
+    /// Create and host a room.
+    Create(CreateArgs),
+    /// Not implemented in v0.1.1.
     Status,
+    /// Not implemented in v0.1.1 (stop the host with Ctrl-C).
     Stop,
 }
 
@@ -46,54 +61,46 @@ pub async fn run(
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        HostAction::Create {
-            name,
-            mode,
-            port,
-            max_members,
-            backlog_max,
-            backlog_hours,
-            chat,
-            local,
-        } => {
-            run_create(
-                &name,
-                &mode,
-                port,
-                max_members,
-                backlog_max,
-                backlog_hours,
-                chat,
-                local,
-                config,
-                shutdown,
-            )
-            .await
-        }
-        HostAction::Status => {
-            println!("[sanctum] not implemented");
-            Ok(())
-        }
-        HostAction::Stop => {
-            println!("[sanctum] stopping...");
-            Ok(())
-        }
+        HostAction::Create(args) => run_create(args, config, shutdown).await,
+        HostAction::Status => Err(crate::commands::not_implemented("host status")),
+        HostAction::Stop => Err(crate::commands::not_implemented(
+            "host stop (stop the host with Ctrl-C)",
+        )),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Only ephemeral rooms exist in v0.1.1 (persistent storage is not wired).
+fn parse_mode(mode: &str) -> Result<RoomMode, String> {
+    match mode {
+        "ephemeral" => Ok(RoomMode::Ephemeral),
+        "persistent" => Err(
+            "persistent mode is not available in v0.1.1: storage and a stable .onion \
+             are not implemented yet. Use --mode ephemeral."
+                .into(),
+        ),
+        other => Err(format!("unknown mode '{other}' (expected: ephemeral)")),
+    }
+}
+
 async fn run_create(
-    name: &str,
-    mode: &str,
-    port: Option<u16>,
-    max_members: u16,
-    backlog_max: u32,
-    backlog_hours: u32,
-    open_chat: bool,
-    local: bool,
+    args: CreateArgs,
     config: &Config,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let CreateArgs {
+        name,
+        mode,
+        port,
+        max_members,
+        backlog_max,
+        backlog_hours,
+        chat: open_chat,
+        local,
+        insecure_plaintext,
+    } = args;
+    let name = name.as_str();
+    let room_mode = parse_mode(&mode)?;
+
     // Load real identity
     let identity = IdentityAdapter::load_from_disk()
         .map_err(|e| format!("{e}\nRun `sanctum init --alias <name>` first."))?;
@@ -101,10 +108,6 @@ async fn run_create(
     let alias = config.identity.alias.clone();
     println!("[sanctum] identity: {} ({})", alias, owner_fp.short());
 
-    let room_mode = match mode {
-        "persistent" => RoomMode::Persistent,
-        _ => RoomMode::Ephemeral,
-    };
     let listen_port = port.unwrap_or(config.host.listen_port);
 
     let mut room_config = RoomConfig {
@@ -206,13 +209,20 @@ async fn run_create(
         println!("[sanctum] type messages or /exit to quit");
         println!("──────────────────────────────────────────────");
 
-        chat_loop::run(
+        let chat_cfg = chat_loop::ChatConfig {
+            room_name: room.name().to_string(),
+            room_mode: room_mode.to_string(),
+            tor_connected: !local,
+            insecure_plaintext,
+        };
+        chat_loop::run_with_config(
             session.transport,
             owner_fp,
             alias,
             Some(e2e_keys),
             true,
             shutdown.clone(),
+            chat_cfg,
         )
         .await;
     } else {
@@ -225,4 +235,17 @@ async fn run_create(
     let _ = relay_handle.await;
     println!("[sanctum] host stopped.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistent_mode_is_refused_explicitly() {
+        assert!(parse_mode("ephemeral").is_ok());
+        let err = parse_mode("persistent").unwrap_err();
+        assert!(err.contains("not available"));
+        assert!(parse_mode("bogus").is_err());
+    }
 }
