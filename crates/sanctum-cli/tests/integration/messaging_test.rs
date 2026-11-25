@@ -208,7 +208,7 @@ fn padding_preserves_message_content() {
 
     for msg in messages {
         let padded = msg_svc.pad_message(msg, &crypto);
-        assert!(padded.len() % 256 == 0);
+        assert!(padded.len().is_multiple_of(256));
         assert!(padded.len() >= msg.len() + 4);
         let unpadded = msg_svc.unpad_message(&padded, &crypto).unwrap();
         assert_eq!(unpadded, msg);
