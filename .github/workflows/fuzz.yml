@@ -1,0 +1,45 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, 10 minutes per target
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "fuzz/**"
+      - "crates/sanctum-crypto/src/**"
+      - "crates/sanctum-infra/src/codec.rs"
+      - "crates/sanctum-infra/src/proto_codec.rs"
+      - "proto/**"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: cargo fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [codec_decode, proto_decode, unpad, ratchet_decrypt]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || '600' }}
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=$SECONDS_PER_TARGET
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts

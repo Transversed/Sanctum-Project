@@ -27,6 +27,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Fuzz targets compile
+        run: cargo check --manifest-path fuzz/Cargo.toml
 
   msrv:
     name: MSRV (1.89)

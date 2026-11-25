@@ -1,0 +1,47 @@
+[package]
+name = "sanctum-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+description = "cargo-fuzz targets for Sanctum's parsers and decryption paths"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone: not part of the main workspace (needs nightly to run).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+sanctum-infra = { path = "../crates/sanctum-infra" }
+sanctum-crypto = { path = "../crates/sanctum-crypto" }
+
+[[bin]]
+name = "codec_decode"
+path = "fuzz_targets/codec_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_decode"
+path = "fuzz_targets/proto_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unpad"
+path = "fuzz_targets/unpad.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ratchet_decrypt"
+path = "fuzz_targets/ratchet_decrypt.rs"
+test = false
+doc = false
+bench = false
