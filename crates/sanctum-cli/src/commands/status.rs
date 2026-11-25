@@ -1,46 +1,39 @@
-//! `sanctum status` — show system status.
+//! `sanctum status` — show local profile status (no network access).
 
 use crate::config::Config;
+use sanctum_infra::identity_pgp::IdentityAdapter;
 
 /// Run the status command.
 pub async fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let home = Config::home_dir();
-    let profile_exists = home.exists();
 
     println!("[sanctum] system status");
     println!(
         "  profile:  {}",
-        if profile_exists {
+        if home.exists() {
             "initialized"
         } else {
-            "not initialized"
+            "not initialized (run `sanctum init`)"
         }
     );
     println!("  home:     {}", home.display());
     println!("  alias:    {}", config.identity.alias);
 
-    // Identity
-    let key_path = home.join("keys").join("signing.key");
-    if key_path.exists() {
-        println!("  identity: imported");
-    } else {
-        println!("  identity: not imported");
+    match IdentityAdapter::load_from_disk() {
+        Ok(id) => println!(
+            "  identity: Ed25519, fingerprint {}",
+            id.fingerprint().short()
+        ),
+        Err(_) => println!("  identity: none"),
     }
 
-    // Tor
     println!(
-        "  tor:      socks=127.0.0.1:{}, control=127.0.0.1:{}",
+        "  tor:      socks=127.0.0.1:{}, control=127.0.0.1:{} (connectivity not checked)",
         config.tor.socks_port, config.tor.control_port
     );
-
-    // TODO: check actual Tor connectivity
-    println!("  tor conn: unknown (not checked)");
-
-    // Host
     println!(
-        "  host:     port={}, mode={}",
-        config.host.listen_port, config.host.default_mode
+        "  host:     port={}, mode=ephemeral",
+        config.host.listen_port
     );
-
     Ok(())
 }
