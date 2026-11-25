@@ -30,6 +30,9 @@ struct RoutedMessage {
     frame: Frame,
 }
 
+/// A client sending this many undecodable frames is disconnected.
+const MAX_INVALID_FRAMES: u32 = 3;
+
 /// Stores fingerprint → display alias for all connected clients.
 type AliasMap = Arc<Mutex<HashMap<String, String>>>;
 
@@ -199,6 +202,7 @@ async fn handle_client(
     });
 
     // ── Phase 5: Message loop ──
+    let mut invalid_frames: u32 = 0;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -208,6 +212,18 @@ async fn handle_client(
                     Ok(frame) => {
                         match frame.message_type {
                             message_types::ROOM_MESSAGE => {
+                                // I3: the sender is the authenticated peer, whatever
+                                // the frame claims. Undecodable frames are dropped.
+                                let frame = match stamp_sender(&frame, &fingerprint) {
+                                    Some(f) => f,
+                                    None => {
+                                        invalid_frames += 1;
+                                        if invalid_frames >= MAX_INVALID_FRAMES {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                };
                                 let svc = host_svc.lock().await;
                                 let recipients = svc.route_recipients(&fingerprint);
                                 drop(svc);
@@ -274,6 +290,19 @@ async fn handle_client(
         fingerprint.short()
     );
     Ok(())
+}
+
+/// Re-encode a `RoomMessage` with the authenticated sender fingerprint.
+///
+/// Returns `None` if the frame is not a decodable `RoomMessage`.
+fn stamp_sender(frame: &Frame, sender: &Fingerprint) -> Option<Frame> {
+    match proto_codec::proto_decode(frame) {
+        Ok(WireMessage::RoomMessage(mut m)) => {
+            m.sender_fingerprint = sender.as_str().to_string();
+            proto_codec::proto_encode(&WireMessage::RoomMessage(m)).ok()
+        }
+        _ => None,
+    }
 }
 
 async fn authenticate_client(
