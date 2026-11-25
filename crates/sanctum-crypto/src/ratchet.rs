@@ -60,7 +60,7 @@ impl Drop for RatchetState {
         if let Some(ref mut ck) = self.chain_key_recv {
             ck.zeroize();
         }
-        for (_, key) in self.skipped_keys.iter_mut() {
+        for key in self.skipped_keys.values_mut() {
             key.zeroize();
         }
     }

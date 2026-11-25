@@ -17,7 +17,6 @@ use sanctum_infra::client_connector::{self, ConnectedSession};
 use sanctum_infra::codec::message_types;
 use sanctum_infra::e2e_session::{E2eSession, InitialMessage, PeerPrivateKeys, PeerPublicKeys};
 use sanctum_infra::host_listener::HostListener;
-use sanctum_infra::noise_transport::NoiseTransport;
 use sanctum_infra::proto_codec::{self, pb, WireMessage};
 use sanctum_infra::tor_control::{TorConfig, TorController};
 

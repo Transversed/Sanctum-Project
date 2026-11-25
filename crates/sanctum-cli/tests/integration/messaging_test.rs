@@ -35,7 +35,7 @@ impl CryptoPort for MockCrypto {
     fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
         let real_len = plaintext.len() as u32;
         let needed = 4 + plaintext.len();
-        let padded_len = ((needed + block_size - 1) / block_size) * block_size;
+        let padded_len = needed.div_ceil(block_size) * block_size;
         let mut out = Vec::with_capacity(padded_len);
         out.extend_from_slice(&real_len.to_be_bytes());
         out.extend_from_slice(plaintext);
