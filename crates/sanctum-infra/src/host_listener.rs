@@ -560,14 +560,24 @@ async fn authenticate_client(
     let alias = host_side_alias(&response.display_alias, &auth.fingerprint);
     if let Admission::Invited(role) = auth.admission {
         // Admission happens here and only here, with the proven key.
-        let member = Member::new(
-            auth.fingerprint.clone(),
-            auth.public_key.clone(),
-            DisplayAlias::new(&alias).unwrap_or_else(|_| DisplayAlias::new("member").unwrap()),
-            role,
-            now,
-        );
-        let added = st.host_service.lock().await.room_mut().add_member(member);
+        let display = DisplayAlias::new(&alias)
+            .or_else(|_| DisplayAlias::new(auth.fingerprint.short()))
+            .map_err(|e| SanctumError::AuthFailed {
+                reason: format!("invalid alias: {e}"),
+            });
+        let added = match display {
+            Ok(display) => {
+                let member = Member::new(
+                    auth.fingerprint.clone(),
+                    auth.public_key.clone(),
+                    display,
+                    role,
+                    now,
+                );
+                st.host_service.lock().await.room_mut().add_member(member)
+            }
+            Err(e) => Err(e),
+        };
         if let Err(e) = added {
             send_auth_result(transport, Err(&e)).await?;
             return Err(e);

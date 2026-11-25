@@ -89,12 +89,10 @@ impl MessageService {
 
         // Get or create session for the sender
         let sender = envelope.sender().clone();
-        if !self.sessions.contains_key(&sender) {
-            self.sessions
-                .insert(sender.clone(), Session::new(sender.clone()));
-        }
-
-        let session = self.sessions.get_mut(&sender).unwrap();
+        let session = self
+            .sessions
+            .entry(sender.clone())
+            .or_insert_with(|| Session::new(sender.clone()));
 
         // Anti-replay check
         if !session.check_replay(envelope.sequence_number()) {
