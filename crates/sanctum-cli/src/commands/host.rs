@@ -9,7 +9,6 @@ use sanctum_domain::entities::member::DisplayAlias;
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_domain::events::SanctumEvent;
 use sanctum_infra::client_connector::{self, ClientCredentials};
-use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::host_listener::HostListener;
 use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
@@ -42,9 +41,6 @@ pub struct CreateArgs {
     /// Listen on 127.0.0.1 without creating a Tor hidden service.
     #[arg(long)]
     pub local: bool,
-    /// DANGER: allow sending unencrypted messages (the host reads them).
-    #[arg(long)]
-    pub insecure_plaintext: bool,
 }
 
 #[derive(Subcommand)]
@@ -98,7 +94,6 @@ async fn run_create(
         backlog_hours,
         chat: open_chat,
         local,
-        insecure_plaintext,
     } = args;
     let name = name.as_str();
     let room_mode = parse_mode(&mode)?;
@@ -124,9 +119,6 @@ async fn run_create(
     // Noise keypair
     let (noise_priv, noise_pub) = sanctum_infra::noise_keygen()?;
 
-    // E2E keys
-    let e2e_keys = PeerPrivateKeys::generate(5);
-
     // Room
     let mut room_svc = RoomService::new();
     let owner_alias =
@@ -143,7 +135,11 @@ async fn run_create(
     println!("[sanctum] room '{}' created ({})", room.name(), room_mode);
 
     // Tor
-    let bind_addr = format!("127.0.0.1:{listen_port}");
+    // Bind first: with --port 0 the OS picks the port, and Tor must map to
+    // the real one. The relay only ever listens on loopback.
+    let tcp_listener = tokio::net::TcpListener::bind(("127.0.0.1", listen_port)).await?;
+    let local_port = tcp_listener.local_addr()?.port();
+    let bind_addr = format!("127.0.0.1:{local_port}");
     let mut tor = if local {
         println!("[sanctum] local mode (no Tor)");
         TorController::mock()
@@ -151,8 +147,8 @@ async fn run_create(
         let tc_config = InfraTorConfig {
             socks_addr: format!("127.0.0.1:{}", config.tor.socks_port),
             control_addr: format!("127.0.0.1:{}", config.tor.control_port),
-            hidden_service_port: listen_port,
-            local_port: listen_port,
+            hidden_service_port: listen_port.max(1),
+            local_port,
         };
         let mut tc = TorController::new(tc_config);
         if let Err(e) = tc.connect().await {
@@ -179,11 +175,13 @@ async fn run_create(
         shutdown.clone(),
     );
     let relay_handle = tokio::spawn(async move {
-        if let Err(e) = listener.run().await {
+        if let Err(e) = listener.serve(tcp_listener).await {
             eprintln!("[sanctum] relay: {e}");
         }
     });
 
+    // Port members connect to: the onion virtual port, or the local port.
+    let invite_port = if local { local_port } else { hs.port };
     let onion_display = if local {
         "127.0.0.1".to_string()
     } else {
@@ -198,7 +196,7 @@ async fn run_create(
     println!(
         "  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {} --host-key {}",
         onion_display,
-        hs.port,
+        invite_port,
         room.id().as_str(),
         invite_codec::encode_host_key(&noise_pub),
     );
@@ -221,23 +219,20 @@ async fn run_create(
             room_name: room.name().to_string(),
             room_mode: room_mode.to_string(),
             tor_connected: !local,
-            insecure_plaintext,
             inviter: Some(chat_loop::InviteIssuer {
                 identity: identity.clone(),
                 target: InviteTarget {
                     room_id: room.id().clone(),
                     onion_address: onion_display.clone(),
-                    port: hs.port,
+                    port: invite_port,
                     host_noise_pubkey: noise_pub.clone(),
                 },
             }),
         };
-        chat_loop::run_with_config(
+        chat_loop::run(
             session.transport,
-            owner_fp,
+            identity.clone(),
             alias,
-            Some(e2e_keys),
-            true,
             shutdown.clone(),
             chat_cfg,
         )

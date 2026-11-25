@@ -32,11 +32,11 @@ pub enum WireMessage {
     RoomMessage(pb::RoomMessage),
     RoomControl(pb::RoomControl),
     PeerReady(pb::PeerReady),
+    PeerLeft(pb::PeerLeft),
 
     // -- X3DH --
     RatchetKeyExchange(pb::RatchetKeyExchange),
     PublishBundle(pb::PublishBundle),
-    RequestBundle(pb::RequestBundle),
     BundleResponse(pb::BundleResponse),
     OPKDepleted(pb::OpkDepleted),
     RefreshOPK(pb::RefreshOpk),
@@ -69,15 +69,13 @@ pub fn proto_encode(msg: &WireMessage) -> Result<Frame, SanctumError> {
         WireMessage::RoomMessage(m) => Ok(Frame::new(message_types::ROOM_MESSAGE, encode_pb(m))),
         WireMessage::RoomControl(m) => Ok(Frame::new(message_types::ROOM_CONTROL, encode_pb(m))),
         WireMessage::PeerReady(m) => Ok(Frame::new(message_types::PEER_READY, encode_pb(m))),
+        WireMessage::PeerLeft(m) => Ok(Frame::new(message_types::PEER_LEFT, encode_pb(m))),
         WireMessage::RatchetKeyExchange(m) => Ok(Frame::new(
             message_types::RATCHET_KEY_EXCHANGE,
             encode_pb(m),
         )),
         WireMessage::PublishBundle(m) => {
             Ok(Frame::new(message_types::PUBLISH_BUNDLE, encode_pb(m)))
-        }
-        WireMessage::RequestBundle(m) => {
-            Ok(Frame::new(message_types::REQUEST_BUNDLE, encode_pb(m)))
         }
         WireMessage::BundleResponse(m) => {
             Ok(Frame::new(message_types::BUNDLE_RESPONSE, encode_pb(m)))
@@ -106,11 +104,11 @@ pub fn proto_decode(frame: &Frame) -> Result<WireMessage, SanctumError> {
         message_types::ROOM_MESSAGE => Ok(WireMessage::RoomMessage(decode_pb(&frame.payload)?)),
         message_types::ROOM_CONTROL => Ok(WireMessage::RoomControl(decode_pb(&frame.payload)?)),
         message_types::PEER_READY => Ok(WireMessage::PeerReady(decode_pb(&frame.payload)?)),
+        message_types::PEER_LEFT => Ok(WireMessage::PeerLeft(decode_pb(&frame.payload)?)),
         message_types::RATCHET_KEY_EXCHANGE => {
             Ok(WireMessage::RatchetKeyExchange(decode_pb(&frame.payload)?))
         }
         message_types::PUBLISH_BUNDLE => Ok(WireMessage::PublishBundle(decode_pb(&frame.payload)?)),
-        message_types::REQUEST_BUNDLE => Ok(WireMessage::RequestBundle(decode_pb(&frame.payload)?)),
         message_types::BUNDLE_RESPONSE => {
             Ok(WireMessage::BundleResponse(decode_pb(&frame.payload)?))
         }
@@ -184,14 +182,15 @@ mod tests {
         let msg = WireMessage::RoomMessage(pb::RoomMessage {
             sender_fingerprint: "A".repeat(40),
             sequence_number: 42,
-            ratchet_header: Some(pb::RatchetHeader {
-                dh_public: vec![0u8; 32],
-                previous_chain_length: 5,
-                message_number: 10,
+            envelope: Some(pb::Envelope {
+                recipient_fingerprint: "B".repeat(40),
+                header: Some(pb::RatchetHeader {
+                    dh_public: vec![0u8; 32],
+                    previous_chain_length: 5,
+                    message_number: 10,
+                }),
+                ciphertext: vec![0xDE, 0xAD, 0xBE, 0xEF],
             }),
-            ciphertext: vec![0xDE, 0xAD, 0xBE, 0xEF],
-            nonce: vec![0u8; 12],
-            timestamp: 1700000000,
         });
 
         let frame = proto_encode(&msg).unwrap();
@@ -199,8 +198,9 @@ mod tests {
         match decoded {
             WireMessage::RoomMessage(m) => {
                 assert_eq!(m.sequence_number, 42);
-                assert_eq!(m.ciphertext, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-                let hdr = m.ratchet_header.unwrap();
+                let env = m.envelope.unwrap();
+                assert_eq!(env.ciphertext, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+                let hdr = env.header.unwrap();
                 assert_eq!(hdr.previous_chain_length, 5);
                 assert_eq!(hdr.message_number, 10);
             }
@@ -275,10 +275,16 @@ mod tests {
     fn prekey_bundle_round_trip() {
         let bundle = pb::PreKeyBundle {
             owner_fingerprint: "A".repeat(40),
+            ed25519_public_key: vec![5u8; 32],
             identity_key: vec![1u8; 32],
             signed_pre_key: vec![2u8; 32],
             spk_signature: vec![3u8; 64],
-            one_time_pre_keys: vec![vec![4u8; 32]; 10],
+            one_time_pre_keys: (0..10)
+                .map(|id| pb::OneTimePreKey {
+                    id,
+                    public_key: vec![4u8; 32],
+                })
+                .collect(),
         };
 
         let msg = WireMessage::PublishBundle(pb::PublishBundle {
@@ -302,9 +308,11 @@ mod tests {
         let msg = WireMessage::RatchetKeyExchange(pb::RatchetKeyExchange {
             sender_fingerprint: "A".repeat(40),
             recipient_fingerprint: "B".repeat(40),
-            identity_key: vec![1u8; 32],
+            sender_identity: None,
             ephemeral_key: vec![2u8; 32],
+            has_opk: true,
             opk_id: 3,
+            header: None,
             ciphertext: vec![0xCA, 0xFE],
         });
 

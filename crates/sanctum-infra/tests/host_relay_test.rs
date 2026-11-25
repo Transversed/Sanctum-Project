@@ -1,6 +1,7 @@
 //! Host relay invariants, tested over real TCP + Noise against `HostListener`.
 //!
 //! - I3: the host overwrites `sender_fingerprint` with the authenticated one.
+//! - A room message reaches its single recipient only.
 //! - Frames that do not decode are dropped, never relayed.
 
 use sanctum_infra::client_connector::ConnectedSession;
@@ -22,14 +23,15 @@ async fn recv_type(s: &mut ConnectedSession, wanted: u8) -> Option<Frame> {
     }
 }
 
-fn room_message(sender: &str, body: &[u8]) -> Frame {
+fn room_message(sender: &str, recipient: &str, body: &[u8]) -> Frame {
     proto_codec::proto_encode(&WireMessage::RoomMessage(pb::RoomMessage {
         sender_fingerprint: sender.to_string(),
         sequence_number: 1,
-        ratchet_header: None,
-        ciphertext: body.to_vec(),
-        nonce: vec![],
-        timestamp: 0,
+        envelope: Some(pb::Envelope {
+            recipient_fingerprint: recipient.to_string(),
+            header: None,
+            ciphertext: body.to_vec(),
+        }),
     }))
     .unwrap()
 }
@@ -38,13 +40,17 @@ fn room_message(sender: &str, body: &[u8]) -> Frame {
 async fn host_overwrites_spoofed_sender_fingerprint() {
     let host = TestHost::start().await;
     let (alice_id, mut alice) = host.join("alice").await;
-    let (_, mut bob) = host.join("bob").await;
+    let (bob_id, mut bob) = host.join("bob").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Alice pretends to be Carol.
     alice
         .transport
-        .send_frame(&room_message(CAROL, b"payload"))
+        .send_frame(&room_message(
+            CAROL,
+            bob_id.fingerprint().as_str(),
+            b"payload",
+        ))
         .await
         .unwrap();
 
@@ -59,7 +65,35 @@ async fn host_overwrites_spoofed_sender_fingerprint() {
         alice_id.fingerprint().as_str(),
         "host must stamp the authenticated sender"
     );
-    assert_eq!(m.ciphertext, b"payload");
+    assert_eq!(m.envelope.unwrap().ciphertext, b"payload");
+}
+
+#[tokio::test]
+async fn envelope_reaches_only_its_recipient() {
+    let host = TestHost::start().await;
+    let (_, mut alice) = host.join("alice").await;
+    let (_, mut bob) = host.join("bob").await;
+    let (carol_id, mut carol) = host.join("carol").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    alice
+        .transport
+        .send_frame(&room_message(
+            "",
+            carol_id.fingerprint().as_str(),
+            b"for carol",
+        ))
+        .await
+        .unwrap();
+    assert!(recv_type(&mut carol, message_types::ROOM_MESSAGE)
+        .await
+        .is_some());
+    assert!(
+        recv_type(&mut bob, message_types::ROOM_MESSAGE)
+            .await
+            .is_none(),
+        "bob must not receive carol's envelope"
+    );
 }
 
 #[tokio::test]

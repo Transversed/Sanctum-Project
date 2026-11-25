@@ -51,12 +51,13 @@ pub mod message_types {
     pub const ROOM_CONTROL: u8 = 0x11;
     /// Peer ready notification (H→all).
     pub const PEER_READY: u8 = 0x12;
+    /// Peer left the room (H→all).
+    pub const PEER_LEFT: u8 = 0x13;
     /// Ratchet key exchange (C↔C via H).
     pub const RATCHET_KEY_EXCHANGE: u8 = 0x20;
     /// Publish PreKey bundle (C→H).
     pub const PUBLISH_BUNDLE: u8 = 0x21;
-    /// Request PreKey bundle (C→H).
-    pub const REQUEST_BUNDLE: u8 = 0x22;
+    // 0x22 (RequestBundle) is retired in protocol v2.
     /// Bundle response (H→C).
     pub const BUNDLE_RESPONSE: u8 = 0x23;
     /// OPK depleted notification (H→C).
