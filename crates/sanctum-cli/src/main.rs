@@ -58,6 +58,10 @@ enum Commands {
         /// Skip interactive chat after joining.
         #[arg(long)]
         no_chat: bool,
+
+        /// DANGER: allow sending unencrypted messages (the host reads them).
+        #[arg(long)]
+        insecure_plaintext: bool,
     },
 
     /// Open an interactive chat session.
@@ -173,9 +177,11 @@ async fn run(
         Commands::Init { alias } => commands::init::run(alias, &config).await,
         Commands::Identity { action } => commands::identity::run(action, &config).await,
         Commands::Host { action } => commands::host::run(action, &config, shutdown).await,
-        Commands::Join { token, no_chat } => {
-            commands::join::run(&token, no_chat, &config, shutdown).await
-        }
+        Commands::Join {
+            token,
+            no_chat,
+            insecure_plaintext,
+        } => commands::join::run(&token, no_chat, insecure_plaintext, &config, shutdown).await,
         Commands::Chat { room_id, backlog } => {
             commands::chat::run(&room_id, backlog, &config, shutdown).await
         }

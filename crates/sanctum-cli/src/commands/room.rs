@@ -45,17 +45,8 @@ pub enum RoomAction {
 
 pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        RoomAction::List => {
-            println!("[sanctum] known rooms: (none — host or join a room first)");
-            Ok(())
-        }
-        RoomAction::Members { room_id } => {
-            println!(
-                "[sanctum] members of {}: (not connected)",
-                &room_id[..8.min(room_id.len())]
-            );
-            Ok(())
-        }
+        RoomAction::List => Err(super::not_implemented("room list")),
+        RoomAction::Members { .. } => Err(super::not_implemented("room members")),
         RoomAction::Invite {
             fingerprint,
             room_onion,
@@ -74,16 +65,7 @@ pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std:
             &host_key,
             config,
         ),
-        RoomAction::Revoke {
-            room_id: _,
-            fingerprint,
-        } => {
-            println!(
-                "[sanctum] revoking {}... (not implemented)",
-                &fingerprint[..8.min(fingerprint.len())]
-            );
-            Ok(())
-        }
+        RoomAction::Revoke { .. } => Err(super::not_implemented("room revoke")),
     }
 }
 

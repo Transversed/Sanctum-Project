@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run(
     token: &str,
     no_chat: bool,
+    insecure_plaintext: bool,
     config: &Config,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -80,13 +81,20 @@ pub async fn run(
     println!("[sanctum] type messages or /exit to quit");
     println!("──────────────────────────────────────────────");
 
-    chat_loop::run(
+    let chat_cfg = chat_loop::ChatConfig {
+        room_name: invite.room_id.as_str().chars().take(8).collect(),
+        room_mode: "ephemeral".into(),
+        tor_connected: !is_local,
+        insecure_plaintext,
+    };
+    chat_loop::run_with_config(
         session.transport,
         local_fp,
         alias,
         Some(e2e_keys),
         false,
         shutdown,
+        chat_cfg,
     )
     .await;
 
