@@ -253,7 +253,6 @@ mod tests {
         // Should be a single line, reasonable length
         assert!(!encoded.contains('\n'));
         assert!(encoded.len() < 1000);
-        println!("Token length: {} chars", encoded.len());
     }
 
     #[test]

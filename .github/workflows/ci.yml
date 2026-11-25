@@ -84,11 +84,12 @@ jobs:
         run: git diff --exit-code crates/sanctum-crypto/tests/kat/vectors.json
 
   no-unsafe:
-    name: Verify No Unsafe
+    name: No unsafe, metadata-free logs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-forbid-unsafe.sh
+      - run: ./scripts/check-logging.sh
 
   no-disk-writes:
     name: Ephemeral zero-disk (I4)

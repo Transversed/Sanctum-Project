@@ -13,7 +13,7 @@
 use sanctum_domain::errors::SanctumError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::info;
+use tracing::debug;
 
 /// Connect to a .onion address through a Tor SOCKS5 proxy.
 ///
@@ -148,7 +148,7 @@ pub async fn connect_via_tor(
         }
     }
 
-    info!("[tor] connected to {target_onion}:{target_port} via SOCKS5");
+    debug!("SOCKS5 connection established");
     Ok(stream)
 }
 

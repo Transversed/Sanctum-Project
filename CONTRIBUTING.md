@@ -47,6 +47,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 ./scripts/check-forbid-unsafe.sh
+./scripts/check-logging.sh
 cargo build -p sanctum-cli && ./scripts/check-no-disk-writes.sh --local
 ```
 

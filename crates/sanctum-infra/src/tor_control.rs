@@ -89,7 +89,7 @@ impl TorController {
     /// 4. Authenticates with the cookie
     pub async fn connect(&mut self) -> Result<(), SanctumError> {
         if self.mock {
-            info!("[tor] mock mode — skipping connect");
+            info!("tor mock mode, skipping connect");
             return Ok(());
         }
 
@@ -269,10 +269,8 @@ impl TorController {
             service_id,
         };
 
-        info!(
-            "[tor] hidden service created: {onion_address}:{}",
-            self.config.hidden_service_port
-        );
+        // Never log the .onion address (metadata).
+        info!("hidden service created");
         self.active_service = Some(hs.clone());
         Ok(hs)
     }
@@ -294,9 +292,12 @@ impl TorController {
             write_cmd(reader, &cmd).await?;
             let response = read_response(reader).await?;
             if !response.starts_with("250") {
-                warn!("[tor] DEL_ONION unexpected response: {response}");
+                warn!(
+                    "hidden service removal failed (status {})",
+                    response.get(..3).unwrap_or("?")
+                );
             }
-            info!("[tor] hidden service destroyed: {}", hs.onion_address);
+            info!("hidden service destroyed");
         }
 
         Ok(())
