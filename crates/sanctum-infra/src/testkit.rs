@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::client_connector::{self, ClientCredentials, ConnectedSession};
+use crate::codec::Frame;
 use crate::host_listener::{HostLimits, HostListener};
 use crate::identity::IdentityAdapter;
 use crate::invite_codec::{self, InviteTarget};
@@ -42,8 +43,23 @@ impl TestHost {
         Self::start_with(config, HostLimits::default()).await
     }
 
+    /// Start a host and receive a copy of every frame it decrypts.
+    pub async fn start_with_tap() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Frame>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let host = Self::start_inner(RoomConfig::default(), HostLimits::default(), Some(tx)).await;
+        (host, rx)
+    }
+
     /// Start a host with custom room configuration and limits.
     pub async fn start_with(config: RoomConfig, limits: HostLimits) -> Self {
+        Self::start_inner(config, limits, None).await
+    }
+
+    async fn start_inner(
+        config: RoomConfig,
+        limits: HostLimits,
+        tap: Option<tokio::sync::mpsc::UnboundedSender<Frame>>,
+    ) -> Self {
         let owner = Arc::new(IdentityAdapter::generate());
         let member = Member::new(
             owner.fingerprint().clone(),
@@ -68,6 +84,10 @@ impl TestHost {
             shutdown.clone(),
         )
         .with_limits(limits);
+        let host = match tap {
+            Some(tap) => host.with_tap(tap),
+            None => host,
+        };
         tokio::spawn(async move {
             let _ = host.serve(listener).await;
         });
