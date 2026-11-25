@@ -18,8 +18,9 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<String>,
 
-    /// Verbosity level.
-    #[arg(short, long, global = true, default_value = "off")]
+    /// Log level (stderr): off, error, warn, info, debug. Logs never
+    /// contain fingerprints, aliases, addresses or message content.
+    #[arg(short, long, global = true, default_value = "warn")]
     log_level: String,
 
     /// Disable banner.
@@ -125,8 +126,13 @@ fn main() {
     let cli = Cli::parse();
 
     // Init logging
-    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("off"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .without_time()
+        .init();
 
     // Banner
     if !cli.no_banner {
