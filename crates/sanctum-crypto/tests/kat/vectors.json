@@ -1,0 +1,61 @@
+{
+  "description": "Sanctum protocol v2: X3DH + Double Ratchet known-answer vectors",
+  "generator": "crates/sanctum-crypto/tests/kat/generate_vectors.py (Python cryptography)",
+  "private_keys": {
+    "alice_ik": "8fbe8d645577e13daa228b5ce42e1b18621cfa8b65306b90daf69752b7dc6150",
+    "alice_ek": "1b46cca1782e33e1fa25f5ff94af6f804f60989b46bcf2dd222bda334529a6af",
+    "bob_ik": "70bb737cf9cd070369d33e066dfc8f1e6c4acfe0a073e344b581b5130fafcc36",
+    "bob_spk": "4ac5594791c34195079ef71170b2d9205fc1bb33a169e9b2c9537da7858f88e7",
+    "bob_opk": "4e3d6bc97806cd08354ea56331e0ad229587a6de9b0844c05d71e41a6928f956",
+    "alice_ratchet_1": "49b18590444880b9e591a6a0237865c80a331d88ad3d670198c3ff81b0af650f",
+    "bob_ratchet_1": "7ea89b269245a0b0470b578a0c704b7d0d1a51e3c323218c6dd1b95795913d69",
+    "alice_ratchet_2": "b509f23594baa3a6ed416a2126511468099db922ca87f4d880c23e9124086a84",
+    "bob_ratchet_2": "2a0dc4bc80e166abb696f8bc647afdd6c9e60cf04d874f3efccf2c6c2301b407"
+  },
+  "x3dh": {
+    "alice_identity_public": "074e1cdcff28c95516e33b28c6176317527f7c3fc4ffc14078c15c1ace5ebc75",
+    "alice_ephemeral_public": "f07f9a1c20c4cc06c38e6da635d575278e07907a7639843c1cb842b2dc9aa07f",
+    "bob_identity_public": "3217a75129bb07fb4db9b0a34101414a5d5ca993c406fe68829e86914b972809",
+    "bob_signed_prekey_public": "f4449011affc2b74ef5ef885f26e50f1a67da5ed6f7f956c84cfc1d7ca806148",
+    "bob_one_time_prekey_public": "8aab07c712227130e2483e91d69a916bc11fe4736e0775702a9e71bf2b58743f",
+    "shared_secret": "38cb2a87fe6a6dc3513edb1ace5b66c9fd9a8d7405e579f2730fe77eb9b8216d",
+    "shared_secret_without_opk": "154112265e8f378b7efdfc70526bc9a863eddc2c36695df2d68776fb79eb1158"
+  },
+  "ratchet": {
+    "associated_data_prefix": "53414e4354554d2d44522d7632074e1cdcff28c95516e33b28c6176317527f7c3fc4ffc14078c15c1ace5ebc753217a75129bb07fb4db9b0a34101414a5d5ca993c406fe68829e86914b972809",
+    "steps": [
+      {
+        "sender": "alice",
+        "plaintext": "6669727374206d657373616765",
+        "dh_public": "8af6dc05b3562568f18af8712ded2d7bfa5163ac141657a186dc0ffa409ecb61",
+        "pn": 0,
+        "n": 0,
+        "ciphertext": "5e207ed988077061fe20e0aa9a82abf0978d7f94b26481131ba87b15f0"
+      },
+      {
+        "sender": "alice",
+        "plaintext": "7365636f6e64206d657373616765",
+        "dh_public": "8af6dc05b3562568f18af8712ded2d7bfa5163ac141657a186dc0ffa409ecb61",
+        "pn": 0,
+        "n": 1,
+        "ciphertext": "c3b2daa31594fb96800a1532fee7c73b4b3ea280ce1e33fd931c59c95608"
+      },
+      {
+        "sender": "bob",
+        "plaintext": "626f62207265706c696573",
+        "dh_public": "0bc0efb5fdd2705d81fc0691911fc4c9a1b276b69578a6b0e4766c7e91f08946",
+        "pn": 0,
+        "n": 0,
+        "ciphertext": "237cc0f3042c7575af08997d1ff15e2f00db9f6741973bb0472cb9"
+      },
+      {
+        "sender": "alice",
+        "plaintext": "7468697264206d657373616765",
+        "dh_public": "50db9798397a6f1205bc8fe9debe9dc20b65dbb8fac2e2ff3b29e78c6f94bf47",
+        "pn": 2,
+        "n": 0,
+        "ciphertext": "d0376162895bd5ce0a901d41279412eb3bb18ad10cda8a2eb6cb0d9b8f"
+      }
+    ]
+  }
+}

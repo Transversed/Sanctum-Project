@@ -29,3 +29,7 @@ pub mod ratchet;
 mod crypto_adapter;
 
 pub use crypto_adapter::SanctumCryptoProvider;
+
+/// Known-answer tests against an independent Python implementation.
+#[cfg(test)]
+mod kat_tests;
