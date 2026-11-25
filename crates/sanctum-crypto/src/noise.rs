@@ -1,7 +1,11 @@
 //! Noise NK handshake for transport encryption between client and host.
 //!
-//! NK means: the client does Not authenticate via Noise (it uses PGP after),
-//! and the host's static Key is known in advance (from the invite token).
+//! NK means: the client does Not authenticate via Noise (it proves its
+//! Ed25519 identity right after, with a signature bound to the handshake
+//! hash), and the host's static Key is known in advance (from the invite).
+//!
+//! The prologue carries the protocol version: peers speaking a different
+//! version fail the handshake instead of misinterpreting each other.
 //!
 //! After the handshake, both sides get a `TransportState` for encrypting
 //! all further communication on the wire.
@@ -10,6 +14,15 @@ use sanctum_domain::SanctumError;
 use snow::{Builder, HandshakeState, TransportState};
 
 const NOISE_PATTERN: &str = "Noise_NK_25519_ChaChaPoly_SHA256";
+
+/// Wire protocol version, bound into every handshake through the prologue.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Noise prologue: both sides must agree on it byte for byte.
+pub const PROLOGUE: &[u8] = b"SANCTUM-NOISE-NK-v2";
+
+/// Length of the handshake hash (SHA-256).
+pub const HANDSHAKE_HASH_LEN: usize = 32;
 
 /// Generate a static Noise keypair for the host.
 /// Returns (private_key, public_key) both 32 bytes.
@@ -26,6 +39,7 @@ pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), SanctumError> {
 /// The host provides its static private key.
 pub fn responder(static_private: &[u8]) -> Result<HandshakeState, SanctumError> {
     Builder::new(NOISE_PATTERN.parse().unwrap())
+        .prologue(PROLOGUE)
         .local_private_key(static_private)
         .build_responder()
         .map_err(|e| SanctumError::MalformedMessage(format!("noise responder: {e}")))
@@ -36,6 +50,7 @@ pub fn responder(static_private: &[u8]) -> Result<HandshakeState, SanctumError> 
 /// The client provides the host's static public key (from the invite token).
 pub fn initiator(remote_static_public: &[u8]) -> Result<HandshakeState, SanctumError> {
     Builder::new(NOISE_PATTERN.parse().unwrap())
+        .prologue(PROLOGUE)
         .remote_public_key(remote_static_public)
         .build_initiator()
         .map_err(|e| SanctumError::MalformedMessage(format!("noise initiator: {e}")))
@@ -68,6 +83,30 @@ pub fn read_message(state: &mut HandshakeState, message: &[u8]) -> Result<Vec<u8
 /// Check if the handshake is complete.
 pub fn is_handshake_complete(state: &HandshakeState) -> bool {
     state.is_handshake_finished()
+}
+
+/// Handshake hash `h` of a completed handshake (channel binding).
+///
+/// Identical on both sides of one connection and unique per connection:
+/// signing it proves possession of a key *for this channel*, so a captured
+/// authentication cannot be replayed on another connection. Must be read
+/// before [`into_transport`] consumes the handshake state.
+pub fn handshake_hash(state: &HandshakeState) -> Result<[u8; HANDSHAKE_HASH_LEN], SanctumError> {
+    if !state.is_handshake_finished() {
+        return Err(SanctumError::MalformedMessage(
+            "handshake hash requested before handshake completion".into(),
+        ));
+    }
+    let h = state.get_handshake_hash();
+    let mut out = [0u8; HANDSHAKE_HASH_LEN];
+    if h.len() != HANDSHAKE_HASH_LEN {
+        return Err(SanctumError::MalformedMessage(format!(
+            "unexpected handshake hash length {}",
+            h.len()
+        )));
+    }
+    out.copy_from_slice(h);
+    Ok(out)
 }
 
 /// Convert a completed handshake into a transport state for encrypting data.
@@ -141,6 +180,47 @@ mod tests {
         let ct = transport_encrypt(&mut server_transport, b"Hello client").unwrap();
         let pt = transport_decrypt(&mut client_transport, &ct).unwrap();
         assert_eq!(pt, b"Hello client");
+    }
+
+    fn complete_pair() -> (HandshakeState, HandshakeState) {
+        let (host_priv, host_pub) = generate_keypair().unwrap();
+        let mut client = initiator(&host_pub).unwrap();
+        let mut server = responder(&host_priv).unwrap();
+        let msg1 = write_message(&mut client, b"").unwrap();
+        read_message(&mut server, &msg1).unwrap();
+        let msg2 = write_message(&mut server, b"").unwrap();
+        read_message(&mut client, &msg2).unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn handshake_hash_matches_on_both_sides_and_differs_per_connection() {
+        let (c1, s1) = complete_pair();
+        let (c2, s2) = complete_pair();
+        let h_c1 = handshake_hash(&c1).unwrap();
+        assert_eq!(h_c1, handshake_hash(&s1).unwrap());
+        assert_eq!(handshake_hash(&c2).unwrap(), handshake_hash(&s2).unwrap());
+        assert_ne!(h_c1, handshake_hash(&c2).unwrap());
+    }
+
+    #[test]
+    fn handshake_hash_refused_before_completion() {
+        let (_, host_pub) = generate_keypair().unwrap();
+        let client = initiator(&host_pub).unwrap();
+        assert!(handshake_hash(&client).is_err());
+    }
+
+    #[test]
+    fn different_prologue_fails_handshake() {
+        let (host_priv, host_pub) = generate_keypair().unwrap();
+        let mut client = Builder::new(NOISE_PATTERN.parse().unwrap())
+            .prologue(b"SANCTUM-NOISE-NK-v1")
+            .remote_public_key(&host_pub)
+            .build_initiator()
+            .unwrap();
+        let mut server = responder(&host_priv).unwrap();
+        let msg1 = write_message(&mut client, b"").unwrap();
+        assert!(read_message(&mut server, &msg1).is_err());
     }
 
     #[test]

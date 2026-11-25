@@ -15,6 +15,8 @@ use snow::TransportState;
 pub struct NoiseTransport {
     tcp: TcpTransport,
     noise: TransportState,
+    /// Noise handshake hash `h`, the channel binding for authentication.
+    handshake_hash: [u8; noise::HANDSHAKE_HASH_LEN],
 }
 
 impl NoiseTransport {
@@ -44,10 +46,12 @@ impl NoiseTransport {
             ));
         }
 
+        let handshake_hash = noise::handshake_hash(&state)?;
         let transport = noise::into_transport(state)?;
         Ok(Self {
             tcp,
             noise: transport,
+            handshake_hash,
         })
     }
 
@@ -77,10 +81,12 @@ impl NoiseTransport {
             ));
         }
 
+        let handshake_hash = noise::handshake_hash(&state)?;
         let transport = noise::into_transport(state)?;
         Ok(Self {
             tcp,
             noise: transport,
+            handshake_hash,
         })
     }
 
@@ -109,14 +115,14 @@ impl NoiseTransport {
         Ok(Frame::new(wire_frame.message_type, decrypted_payload))
     }
 
+    /// Handshake hash of this connection (identical on both ends).
+    pub fn handshake_hash(&self) -> &[u8; noise::HANDSHAKE_HASH_LEN] {
+        &self.handshake_hash
+    }
+
     /// Shutdown the underlying connection.
     pub async fn shutdown(&mut self) {
         self.tcp.shutdown().await;
-    }
-
-    /// Consume and return inner parts.
-    pub fn into_parts(self) -> (TcpTransport, TransportState) {
-        (self.tcp, self.noise)
     }
 }
 
