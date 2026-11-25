@@ -53,3 +53,6 @@ prost-build.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "io-util"] }
 tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -67,6 +67,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Dev
 tempfile = "3"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 [profile.release]
 opt-level = 3
 lto = true

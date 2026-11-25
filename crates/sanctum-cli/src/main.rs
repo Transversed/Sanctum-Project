@@ -1,5 +1,7 @@
 //! Sanctum CLI — entry point.
 
+#![forbid(unsafe_code)]
+
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 

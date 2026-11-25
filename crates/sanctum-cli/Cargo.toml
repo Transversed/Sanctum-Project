@@ -51,3 +51,6 @@ bytes.workspace = true
 [[example]]
 name = "chat_demo"
 path = "examples/chat_demo.rs"
+
+[lints]
+workspace = true
