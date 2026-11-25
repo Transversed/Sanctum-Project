@@ -4,10 +4,13 @@
 //! authenticates via cookie file, and creates/destroys ephemeral
 //! v3 onion hidden services using ADD_ONION / DEL_ONION.
 
+use hmac::{Hmac, Mac};
 use sanctum_domain::errors::SanctumError;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use sha2::Sha256;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+use zeroize::Zeroizing;
 
 /// Tor configuration.
 #[derive(Debug, Clone)]
@@ -105,106 +108,7 @@ impl TorController {
 
         let mut reader = BufReader::new(stream);
 
-        // ── Step 2: PROTOCOLINFO to discover cookie path ──
-        write_cmd(&mut reader, "PROTOCOLINFO 1\r\n").await?;
-
-        let mut cookie_path_from_tor: Option<String> = None;
-        loop {
-            let line = read_response(&mut reader).await?;
-            if line.contains("COOKIEFILE=") {
-                if let Some(start) = line.find("COOKIEFILE=\"") {
-                    let rest = &line[start + 12..];
-                    if let Some(end) = rest.find('"') {
-                        cookie_path_from_tor = Some(rest[..end].to_string());
-                    }
-                }
-            }
-            if line.starts_with("250 ") {
-                break;
-            }
-            if line.starts_with("5") {
-                return Err(SanctumError::TorUnavailable(format!(
-                    "PROTOCOLINFO failed: {line}"
-                )));
-            }
-        }
-
-        // ── Step 3: Build list of cookie paths to try ──
-        // Tor-reported path first, then common fallbacks
-        let mut cookie_paths: Vec<String> = Vec::new();
-        if let Some(p) = cookie_path_from_tor {
-            cookie_paths.push(p);
-        }
-        cookie_paths.push("/var/lib/tor/control_auth_cookie".into());
-        cookie_paths.push("/var/run/tor/control.authcookie".into());
-        cookie_paths.push("/usr/local/var/lib/tor/control_auth_cookie".into());
-        // Deduplicate (Tor-reported path may be the same as a fallback)
-        cookie_paths.dedup();
-
-        // ── Step 4: Read cookie and authenticate ──
-        let mut authenticated = false;
-        let mut last_error = String::new();
-
-        for cookie_path in &cookie_paths {
-            match tokio::fs::read(cookie_path).await {
-                Ok(cookie) => {
-                    if cookie.len() != 32 {
-                        last_error = format!(
-                            "cookie at {cookie_path} has wrong length: {} (expected 32)",
-                            cookie.len()
-                        );
-                        warn!("[tor] {last_error}");
-                        continue;
-                    }
-                    let hex_cookie = hex_encode(&cookie);
-                    let cmd = format!("AUTHENTICATE {hex_cookie}\r\n");
-                    write_cmd(&mut reader, &cmd).await?;
-                    let response = read_response(&mut reader).await?;
-                    if response.starts_with("250") {
-                        info!("[tor] authenticated via cookie ({cookie_path})");
-                        authenticated = true;
-                        break;
-                    } else {
-                        last_error = format!("cookie auth rejected for {cookie_path}: {response}");
-                        warn!("[tor] {last_error}");
-                    }
-                }
-                Err(e) => {
-                    last_error = format!("cannot read {cookie_path}: {e}");
-                    // Only log at debug level — permission errors on wrong paths are expected
-                }
-            }
-        }
-
-        // ── Step 5: Fallback to empty auth ──
-        if !authenticated {
-            write_cmd(&mut reader, "AUTHENTICATE\r\n").await?;
-            let response = read_response(&mut reader).await?;
-            if response.starts_with("250") {
-                info!("[tor] authenticated (no password)");
-                authenticated = true;
-            }
-        }
-
-        // ── Step 6: Final error with actionable message ──
-        if !authenticated {
-            return Err(SanctumError::TorUnavailable(format!(
-                "could not authenticate to Tor control port.\n\
-                 Last error: {last_error}\n\
-                 \n\
-                 Checklist:\n\
-                 1. Verify /etc/tor/torrc contains:\n\
-                    ControlPort 9051\n\
-                    CookieAuthentication 1\n\
-                    CookieAuthFileGroupReadable 1\n\
-                 2. Restart Tor: sudo systemctl restart tor\n\
-                 3. Add your user to the tor group: sudo usermod -aG tor $USER\n\
-                 4. Restart your terminal (or run: newgrp tor)\n\
-                 5. Verify cookie is readable: cat /var/lib/tor/control_auth_cookie | wc -c\n\
-                    (should print 32)"
-            )));
-        }
-
+        authenticate_safecookie(&mut reader).await?;
         self.control_stream = Some(reader);
         Ok(())
     }
@@ -331,6 +235,148 @@ impl TorController {
 // Helpers
 // ============================================================
 
+/// HMAC key of the server's proof (control-spec, AUTHCHALLENGE).
+pub const SAFECOOKIE_SERVER_KEY: &[u8] =
+    b"Tor safe cookie authentication server-to-controller hash";
+/// HMAC key of the controller's proof.
+pub const SAFECOOKIE_CLIENT_KEY: &[u8] =
+    b"Tor safe cookie authentication controller-to-server hash";
+
+fn safecookie_mac(
+    key: &[u8],
+    cookie: &[u8],
+    client_nonce: &[u8],
+    server_nonce: &[u8],
+) -> Hmac<Sha256> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .unwrap_or_else(|_| unreachable!("HMAC accepts any key length"));
+    mac.update(cookie);
+    mac.update(client_nonce);
+    mac.update(server_nonce);
+    mac
+}
+
+/// SERVERHASH = HMAC-SHA256(server key, cookie ‖ client nonce ‖ server nonce).
+pub fn safecookie_server_hash(cookie: &[u8], client_nonce: &[u8], server_nonce: &[u8]) -> [u8; 32] {
+    safecookie_mac(SAFECOOKIE_SERVER_KEY, cookie, client_nonce, server_nonce)
+        .finalize()
+        .into_bytes()
+        .into()
+}
+
+/// Controller proof = HMAC-SHA256(client key, cookie ‖ client nonce ‖ server nonce).
+pub fn safecookie_client_hash(cookie: &[u8], client_nonce: &[u8], server_nonce: &[u8]) -> [u8; 32] {
+    safecookie_mac(SAFECOOKIE_CLIENT_KEY, cookie, client_nonce, server_nonce)
+        .finalize()
+        .into_bytes()
+        .into()
+}
+
+fn tor_err(msg: impl Into<String>) -> SanctumError {
+    SanctumError::TorUnavailable(msg.into())
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// SAFECOOKIE authentication (control-spec 3.24): both sides prove they
+/// know the cookie without revealing it, so a fake control port cannot
+/// steal it. Unauthenticated control ports are refused.
+async fn authenticate_safecookie(reader: &mut BufReader<TcpStream>) -> Result<(), SanctumError> {
+    write_cmd(reader, "PROTOCOLINFO 1\r\n").await?;
+    let mut methods: Vec<String> = Vec::new();
+    let mut cookie_file: Option<String> = None;
+    loop {
+        let line = read_response(reader).await?;
+        if let Some(rest) = line.strip_prefix("250-AUTH ") {
+            if let Some(m) = rest.split(' ').find_map(|t| t.strip_prefix("METHODS=")) {
+                methods = m.split(',').map(str::to_string).collect();
+            }
+            if let Some(start) = rest.find("COOKIEFILE=\"") {
+                let path = &rest[start + 12..];
+                cookie_file = path.find('"').map(|end| path[..end].to_string());
+            }
+        }
+        if line.starts_with("250 ") {
+            break;
+        }
+        if line.starts_with('4') || line.starts_with('5') || line.is_empty() {
+            return Err(tor_err(format!("PROTOCOLINFO failed: {line}")));
+        }
+    }
+
+    if !methods.iter().any(|m| m == "SAFECOOKIE") {
+        let reason = if methods.iter().any(|m| m == "NULL") {
+            "the Tor control port accepts unauthenticated connections: refusing to use it"
+        } else {
+            "the Tor control port does not offer SAFECOOKIE authentication"
+        };
+        return Err(tor_err(format!("{reason}.\n{TORRC_HELP}")));
+    }
+    let cookie_path = cookie_file.ok_or_else(|| tor_err("Tor did not report its cookie file"))?;
+    let cookie = Zeroizing::new(
+        tokio::fs::read(&cookie_path)
+            .await
+            .map_err(|e| tor_err(format!("cannot read the Tor cookie ({e}).\n{TORRC_HELP}")))?,
+    );
+    if cookie.len() != 32 {
+        return Err(tor_err("Tor cookie has an unexpected length"));
+    }
+
+    let mut client_nonce = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut client_nonce);
+    write_cmd(
+        reader,
+        &format!("AUTHCHALLENGE SAFECOOKIE {}\r\n", hex_encode(&client_nonce)),
+    )
+    .await?;
+    let line = read_response(reader).await?;
+    let rest = line
+        .strip_prefix("250 AUTHCHALLENGE ")
+        .ok_or_else(|| tor_err(format!("AUTHCHALLENGE failed: {line}")))?;
+    let field = |name: &str| {
+        rest.split(' ')
+            .find_map(|t| t.strip_prefix(name))
+            .and_then(hex_decode)
+            .ok_or_else(|| tor_err("malformed AUTHCHALLENGE reply"))
+    };
+    let server_hash = field("SERVERHASH=")?;
+    let server_nonce = field("SERVERNONCE=")?;
+
+    // Constant-time check that the control port knows the cookie.
+    if safecookie_mac(SAFECOOKIE_SERVER_KEY, &cookie, &client_nonce, &server_nonce)
+        .verify_slice(&server_hash)
+        .is_err()
+    {
+        return Err(tor_err(
+            "the Tor control port could not prove it knows the cookie (fake control port?)",
+        ));
+    }
+    let proof = safecookie_client_hash(&cookie, &client_nonce, &server_nonce);
+    write_cmd(reader, &format!("AUTHENTICATE {}\r\n", hex_encode(&proof))).await?;
+    let line = read_response(reader).await?;
+    if !line.starts_with("250") {
+        return Err(tor_err(format!("Tor rejected authentication: {line}")));
+    }
+    debug!("authenticated to the Tor control port (SAFECOOKIE)");
+    Ok(())
+}
+
+const TORRC_HELP: &str = "Checklist:\n\
+  1. /etc/tor/torrc contains: ControlPort 9051, CookieAuthentication 1, \
+CookieAuthFileGroupReadable 1\n\
+  2. restart Tor: sudo systemctl restart tor\n\
+  3. add your user to Tor's group (Debian/Ubuntu: debian-tor, others: tor):\n\
+     sudo usermod -aG debian-tor $USER   then log out and back in\n\
+  Never run sanctum itself with sudo.";
+
 async fn write_cmd(reader: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), SanctumError> {
     reader
         .get_mut()
@@ -347,7 +393,9 @@ async fn write_cmd(reader: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), S
 
 async fn read_response(reader: &mut BufReader<TcpStream>) -> Result<String, SanctumError> {
     let mut line = String::new();
-    reader
+    // Bounded: a hostile control port cannot make us buffer forever.
+    (&mut *reader)
+        .take(4096)
         .read_line(&mut line)
         .await
         .map_err(|e| SanctumError::TorUnavailable(format!("control read: {e}")))?;
@@ -387,6 +435,30 @@ fn generate_mock_onion() -> String {
 
 #[cfg(test)]
 mod tests {
+    // Reference values computed independently with Python's hmac module:
+    // cookie = 00..1f, client nonce = AA*32, server nonce = 55*32.
+    #[test]
+    fn safecookie_hashes_match_reference() {
+        let cookie: Vec<u8> = (0u8..32).collect();
+        let cn = [0xAAu8; 32];
+        let sn = [0x55u8; 32];
+        assert_eq!(
+            hex_encode(&safecookie_server_hash(&cookie, &cn, &sn)).to_lowercase(),
+            "5f7cb5569957c99373e329258545940f029af175da225f4a3125eebf30c24bba"
+        );
+        assert_eq!(
+            hex_encode(&safecookie_client_hash(&cookie, &cn, &sn)).to_lowercase(),
+            "9f99f2c4b75c91123ca5c6c6e3f76a9ef7fbd9471053cbe34454a4269cc39f7c"
+        );
+    }
+
+    #[test]
+    fn hex_decode_round_trip_and_rejects_garbage() {
+        assert_eq!(hex_decode("00ffA0"), Some(vec![0x00, 0xff, 0xa0]));
+        assert_eq!(hex_decode("abc"), None);
+        assert_eq!(hex_decode("zz"), None);
+    }
+
     use super::*;
 
     #[tokio::test]

@@ -116,7 +116,7 @@ echo 'PROTOCOLINFO' | nc 127.0.0.1 9051
 | Symptôme | Cause probable | Solution |
 |----------|---------------|----------|
 | "Tor unavailable" | Tor daemon pas lancé | `sudo systemctl start tor` |
-| "cookie auth failed" | Permissions cookie | `sudo usermod -a -G debian-tor $USER` |
+| "cannot read the Tor cookie" | Permissions cookie | `sudo usermod -aG debian-tor $USER`, then log out and back in. Never run sanctum with sudo. |
 | "connection refused :9738" | Firewall local | Vérifier que localhost:9738 est ouvert |
 | "nonce already used" | Bug de replay ou clock skew | Vérifier l'horloge système (`timedatectl`) |
 | "fingerprint not authorized" | Pas invité | Vérifier le token avec l'host |
