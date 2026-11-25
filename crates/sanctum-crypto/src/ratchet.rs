@@ -526,6 +526,29 @@ mod tests {
     }
 
     #[test]
+    fn random_garbage_never_panics_nor_desynchronizes() {
+        use rand::{Rng, RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xD0D0);
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        for i in 0..500u32 {
+            let mut dh_public = [0u8; 32];
+            rng.fill_bytes(&mut dh_public);
+            let header = Header {
+                dh_public,
+                prev_chain_len: rng.gen_range(0..300),
+                msg_num: rng.gen_range(0..300),
+            };
+            let mut ct = vec![0u8; rng.gen_range(0..80)];
+            rng.fill_bytes(&mut ct);
+            assert!(bob.decrypt(&header, &ct).is_err());
+            if i % 50 == 0 {
+                let (h, c) = alice.encrypt(b"still fine").unwrap();
+                assert_eq!(bob.decrypt(&h, &c).unwrap(), b"still fine");
+            }
+        }
+    }
+
+    #[test]
     fn kdf_ck_matches_signal_constants() {
         let ck = [7u8; 32];
         let (next, mk) = kdf_ck(&ck);
