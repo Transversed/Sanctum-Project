@@ -4,7 +4,7 @@
 //! Compiled only for tests and with the `test-support` feature.
 
 use crate::client_connector::{self, ClientCredentials, ConnectedSession};
-use crate::host_listener::HostListener;
+use crate::host_listener::{HostLimits, HostListener};
 use crate::identity::IdentityAdapter;
 use crate::invite_codec::{self, InviteTarget};
 use sanctum_app::auth_service::unix_now;
@@ -37,6 +37,11 @@ impl TestHost {
 
     /// Start a host with a custom room configuration.
     pub async fn start_with_config(config: RoomConfig) -> Self {
+        Self::start_with(config, HostLimits::default()).await
+    }
+
+    /// Start a host with custom room configuration and limits.
+    pub async fn start_with(config: RoomConfig, limits: HostLimits) -> Self {
         let owner = Arc::new(IdentityAdapter::generate());
         let member = Member::new(
             owner.fingerprint().clone(),
@@ -59,7 +64,8 @@ impl TestHost {
             noise_pub.clone(),
             noise_priv,
             shutdown.clone(),
-        );
+        )
+        .with_limits(limits);
         tokio::spawn(async move {
             let _ = host.serve(listener).await;
         });

@@ -14,7 +14,7 @@ use sanctum_app::auth_service::unix_now;
 use sanctum_app::sanitize::{sanitize_alias, sanitize_for_terminal};
 use sanctum_domain::entities::member::{Fingerprint, Role};
 use sanctum_domain::errors::SanctumError;
-use sanctum_infra::codec::message_types;
+use sanctum_infra::codec::{self, message_types};
 use sanctum_infra::identity::{Ed25519Verifier, IdentityAdapter};
 use sanctum_infra::invite_codec::{self, InviteTarget};
 use sanctum_infra::noise_transport::NoiseTransport;
@@ -37,6 +37,9 @@ pub struct InviteIssuer {
     pub identity: Arc<IdentityAdapter>,
     pub target: InviteTarget,
 }
+
+/// Interval between keepalive PINGs.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Longest accepted invitation lifetime from `/invite`.
 const MAX_INVITE_TTL_HOURS: u64 = 24 * 7;
@@ -122,10 +125,20 @@ pub async fn run(
     );
 
     let mut key_rx = spawn_keyboard(scr.raw);
+    // Keepalive: the host disconnects members silent for 120 s.
+    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive.tick().await;
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
+
+            _ = keepalive.tick() => {
+                if let Err(e) = transport.send_frame(&codec::ping_frame()).await {
+                    sys(&mut scr, &st, &format!("connexion perdue: {e}"));
+                    break;
+                }
+            }
 
             result = transport.recv_frame() => {
                 let frame = match result {

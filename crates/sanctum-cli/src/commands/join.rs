@@ -8,6 +8,9 @@ use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
 use tokio_util::sync::CancellationToken;
 
+/// Tor circuits are slow to build; beyond this, give up.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
 pub async fn run(
     token: &str,
     no_chat: bool,
@@ -50,28 +53,34 @@ pub async fn run(
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback());
 
-    let session = if invite.onion_address.ends_with(".onion") {
-        println!("[sanctum] connecting via Tor (may take 10-30s)...");
-        let socks_addr = format!("127.0.0.1:{}", config.tor.socks_port);
-        client_connector::connect_via_tor_and_auth(
-            &socks_addr,
-            &invite.onion_address,
-            invite.port,
-            &creds,
-            &invite.host_noise_pubkey,
-        )
-        .await?
-    } else if is_loopback {
-        let addr = format!("{}:{}", invite.onion_address, invite.port);
-        println!("[sanctum] connecting to {addr} (local, no Tor)...");
-        client_connector::connect_and_auth(&addr, &creds, &invite.host_noise_pubkey).await?
-    } else {
-        return Err(format!(
-            "refusing to connect to '{}': not a .onion address (Sanctum never uses clearnet)",
-            sanitize_for_terminal(&invite.onion_address)
-        )
-        .into());
+    let connect = async {
+        if invite.onion_address.ends_with(".onion") {
+            println!("[sanctum] connecting via Tor (may take 10-30s)...");
+            let socks_addr = format!("127.0.0.1:{}", config.tor.socks_port);
+            client_connector::connect_via_tor_and_auth(
+                &socks_addr,
+                &invite.onion_address,
+                invite.port,
+                &creds,
+                &invite.host_noise_pubkey,
+            )
+            .await
+        } else if is_loopback {
+            let addr = format!("{}:{}", invite.onion_address, invite.port);
+            println!("[sanctum] connecting to {addr} (local, no Tor)...");
+            client_connector::connect_and_auth(&addr, &creds, &invite.host_noise_pubkey).await
+        } else {
+            Err(sanctum_domain::errors::SanctumError::ConnectionLost(
+                format!(
+                "refusing to connect to '{}': not a .onion address (Sanctum never uses clearnet)",
+                sanitize_for_terminal(&invite.onion_address)
+            ),
+            ))
+        }
     };
+    let session = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        .await
+        .map_err(|_| "timed out connecting to the host")??;
 
     println!(
         "[sanctum] authenticated (Noise OK, role: {})",

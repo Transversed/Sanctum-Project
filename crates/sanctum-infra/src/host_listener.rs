@@ -28,8 +28,10 @@ use sanctum_domain::errors::SanctumError;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex, Semaphore};
+use tokio::time::{timeout, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use zeroize::Zeroizing;
@@ -38,6 +40,28 @@ use zeroize::Zeroizing;
 const MAX_INVALID_FRAMES: u32 = 3;
 /// Below this many one-time prekeys, the owner is asked for more.
 const OPK_LOW_WATERMARK: usize = 5;
+
+/// Resource limits of the relay (P5.2).
+#[derive(Debug, Clone, Copy)]
+pub struct HostLimits {
+    /// Noise handshake + authentication must complete within this delay.
+    pub handshake_timeout: Duration,
+    /// An authenticated client silent for this long is disconnected
+    /// (clients send PING every 30 s).
+    pub idle_timeout: Duration,
+    /// Simultaneous connections, authenticated or not.
+    pub max_connections: usize,
+}
+
+impl Default for HostLimits {
+    fn default() -> Self {
+        Self {
+            handshake_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(120),
+            max_connections: 64,
+        }
+    }
+}
 
 /// A published bundle: identity part + pool of one-time prekeys.
 struct StoredBundle {
@@ -65,12 +89,17 @@ struct HostState {
     verifier: Ed25519Verifier,
     /// Bundles of connected members, in RAM only.
     bundles: Mutex<HashMap<Fingerprint, StoredBundle>>,
+    limits: HostLimits,
 }
 
 pub struct HostListener {
     bind_addr: String,
     state: Arc<HostState>,
     shutdown: CancellationToken,
+}
+
+fn state_mut(state: &mut Arc<HostState>) -> &mut HostState {
+    Arc::get_mut(state).unwrap_or_else(|| unreachable!("HostState is shared only once serving"))
 }
 
 impl HostListener {
@@ -94,9 +123,16 @@ impl HostListener {
                 route_tx,
                 verifier: Ed25519Verifier,
                 bundles: Mutex::new(HashMap::new()),
+                limits: HostLimits::default(),
             }),
             shutdown,
         }
+    }
+
+    /// Override the default resource limits (before serving).
+    pub fn with_limits(mut self, limits: HostLimits) -> Self {
+        state_mut(&mut self.state).limits = limits;
+        self
     }
 
     /// Bind `bind_addr` and serve until shutdown.
@@ -111,17 +147,24 @@ impl HostListener {
     pub async fn serve(&self, listener: TcpListener) -> Result<(), SanctumError> {
         info!("relay listening");
         let mut conn_counter: u64 = 1;
+        let slots = Arc::new(Semaphore::new(self.state.limits.max_connections));
 
         loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => break,
                 accept = listener.accept() => {
                     let Ok((stream, _addr)) = accept else { continue };
+                    // Over the limit: close immediately (stream dropped).
+                    let Ok(permit) = slots.clone().try_acquire_owned() else {
+                        debug!("connection limit reached");
+                        continue;
+                    };
                     let conn_id = conn_counter;
                     conn_counter += 1;
                     let state = self.state.clone();
                     let shutdown = self.shutdown.clone();
                     tokio::spawn(async move {
+                        let _permit = permit;
                         let tcp = TcpTransport::new(stream, conn_id);
                         if let Err(e) = handle_client(tcp, conn_id, state, shutdown).await {
                             debug!(conn_id, "connection closed: {e}");
@@ -140,11 +183,15 @@ async fn handle_client(
     st: Arc<HostState>,
     shutdown: CancellationToken,
 ) -> Result<(), SanctumError> {
-    // ── Phase 1: Noise NK handshake ──
-    let mut transport = NoiseTransport::host_handshake(tcp, &st.host_noise_privkey).await?;
-
-    // ── Phase 2: proven identity ──
-    let (fingerprint, display_alias) = authenticate_client(&mut transport, &st).await?;
+    // ── Phases 1-2: Noise NK handshake + proven identity, time-boxed ──
+    let setup = async {
+        let mut transport = NoiseTransport::host_handshake(tcp, &st.host_noise_privkey).await?;
+        let (fp, alias) = authenticate_client(&mut transport, &st).await?;
+        Ok::<_, SanctumError>((transport, fp, alias))
+    };
+    let (mut transport, fingerprint, display_alias) = timeout(st.limits.handshake_timeout, setup)
+        .await
+        .map_err(|_| SanctumError::ConnectionLost("handshake timeout".into()))??;
     debug!(conn_id, "client authenticated");
 
     {
@@ -187,11 +234,19 @@ async fn handle_client(
 
     // ── Phase 4: relay loop ──
     let mut invalid_frames: u32 = 0;
+    let idle = tokio::time::sleep(st.limits.idle_timeout);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
 
+            _ = &mut idle => {
+                debug!(conn_id, "idle timeout");
+                break;
+            }
+
             result = transport.recv_frame() => {
+                idle.as_mut().reset(Instant::now() + st.limits.idle_timeout);
                 let frame = match result {
                     Ok(f) => f,
                     Err(e) => {
