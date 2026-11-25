@@ -1,228 +1,180 @@
-# Sanctum — Wire Protocol Specification
+# Sanctum — Wire Protocol, version 2
 
-**Protocol Version**: 1
-**Status**: Draft (v0.1)
-
----
+Status: implemented in v0.1.1. Version 2 is **not** compatible with version 1.
+The normative message definitions are in [`proto/sanctum.proto`](../proto/sanctum.proto);
+this document explains the flows and the cryptographic constructions.
 
 ## 1. Transport
 
-All communication flows over **Tor Hidden Services v3**. The host exposes a `.onion` address on a configurable port (default: 9738). Clients connect via their local Tor SOCKS5 proxy.
+- Clients reach the host through a **Tor v3 onion service** (SOCKS5 on the client
+  side). The only exception is loopback (`127.0.0.0/8`, `localhost`) for local
+  testing; any other address is refused by the client (no clearnet).
+- The host relay listens on `127.0.0.1` only; Tor maps the onion port to it.
 
-No clearnet fallback. No WebSocket. No HTTPS.
-
----
-
-## 2. Frame Format
-
-All messages use a simple length-prefixed framing:
+## 2. Framing
 
 ```
-┌──────────────┬──────────┬──────────────────────┐
-│ len: u32 BE  │ type: u8 │ payload: [u8; len-1] │
-│ (4 bytes)    │ (1 byte) │ (len - 1 bytes)      │
-└──────────────┴──────────┴──────────────────────┘
+┌────────────┬─────────┬──────────────────────────┐
+│ length u32 │ type u8 │ payload (length−1 bytes) │
+└────────────┴─────────┴──────────────────────────┘
 ```
 
-- `len`: u32 big-endian. Size of (type + payload). Does NOT include its own 4 bytes.
-- Total bytes on wire = `4 + len`
-- Payload size = `len - 1`
-- Constraints: `1 ≤ len ≤ 65536` (64 KiB max). `len = 0` or `len > 65536` → close connection.
-- `payload`: Protobuf-serialized (via `prost`)
+Big-endian length, maximum 65 536 bytes. After the Noise handshake every
+payload is encrypted with the Noise transport keys (the type byte is not).
 
----
+| Type | Message | Direction |
+|------|---------|-----------|
+| 0x01 | Noise NK message 1 (raw bytes) | C→H |
+| 0x02 | Noise NK message 2 (raw bytes) | H→C |
+| 0x03 | `AuthChallenge` | H→C |
+| 0x04 | `AuthResponse` | C→H |
+| 0x05 | `AuthResult` | H→C |
+| 0x10 | `RoomMessage` | C→H→C |
+| 0x12 | `PeerReady` | H→C |
+| 0x13 | `PeerLeft` | H→C |
+| 0x20 | `RatchetKeyExchange` | C→H→C |
+| 0x21 | `PublishBundle` | C→H |
+| 0x23 | `BundleResponse` | H→C |
+| 0x24 | `OPKDepleted` | H→C |
+| 0x25 | `RefreshOPK` | C→H |
+| 0xFE / 0xFD | Ping / Pong (empty) | both |
+| 0xFF | `ProtocolError` | both |
 
-## 3. Message Types
+Types 0x11 (`RoomControl`) and 0x30–0x32 (backlog) are defined for later versions
+and are not used in v0.1.1. 0x22 (`RequestBundle`) is retired.
 
-| Type | Code | Direction | Description |
-|------|------|-----------|-------------|
-| `HandshakeInit` | 0x01 | C→H | Noise NK initiation |
-| `HandshakeResp` | 0x02 | H→C | Noise NK response |
-| `AuthChallenge` | 0x03 | H→C | PGP challenge |
-| `AuthResponse` | 0x04 | C→H | PGP signed response + alias |
-| `AuthResult` | 0x05 | H→C | Success/failure + room state + bundles |
-| `RoomMessage` | 0x10 | C→H / H→C | E2E encrypted message (relayed blind) |
-| `RoomControl` | 0x11 | C→H / H→C | Room operations (kick, allow member) |
-| `PeerReady` | 0x12 | H→all | Member X3DH sync complete |
-| `RatchetKeyExchange` | 0x20 | C↔C (via H) | Double Ratchet key exchange |
-| `PublishBundle` | 0x21 | C→H | Client publishes PreKey Bundle |
-| `RequestBundle` | 0x22 | C→H | Client requests a peer's bundle |
-| `BundleResponse` | 0x23 | H→C | Host sends requested bundle |
-| `OPKDepleted` | 0x24 | H→C | OPK pool low (< 3) notification |
-| `RefreshOPK` | 0x25 | C→H | Client publishes new OPKs |
-| `BacklogStart` | 0x30 | H→C | Begin backlog delivery |
-| `BacklogEnd` | 0x31 | H→C | End backlog delivery |
-| `BacklogAck` | 0x32 | C→H | Client confirms backlog received |
-| `Ping` | 0xFE | bidirectional | Keepalive (60s interval) |
-| `Pong` | 0xFD | bidirectional | Keepalive response |
-| `Error` | 0xFF | bidirectional | Protocol error |
+## 3. Connection lifecycle
 
----
+### 3.1 Noise NK handshake
 
-## 4. Connection Lifecycle
+Pattern `Noise_NK_25519_ChaChaPoly_SHA256`, prologue `SANCTUM-NOISE-NK-v2`.
+The host's static key comes from the invitation, so the client authenticates the
+host; a peer speaking another protocol version fails here (different prologue).
+Both sides keep the handshake hash `h` (32 bytes): it is unique per connection
+and binds the authentication to this channel.
 
-### 4.1 Handshake (Noise NK)
+### 3.2 Authentication (Ed25519, channel-bound)
 
 ```
-Client                              Host
-  │                                   │
-  ├── HandshakeInit ────────────────►│
-  │   { protocol_version: u16,       │
-  │     min_supported_version: u16,  │
-  │     noise_ephemeral_key: [u8;32]}│
-  │                                   │
-  │◄── HandshakeResp ────────────────┤
-  │   { noise_payload }              │
-  │                                   │
-  │   [Noise NK transport established]│
+H→C  AuthChallenge { nonce[32], timestamp, room_id, server_id = SHA-256(host Noise static key) }
+C    checks server_id against the key from the invitation
+C    sig = Ed25519(identity_sk, payload)
+C→H  AuthResponse { ed25519_public_key, sig, display_alias, invite_token }
+H→C  AuthResult { success, error_message, member_role }
 ```
 
-Version check: if `protocol_version < min_supported_version` → `Error::VersionMismatch` → close.
+`payload = "SANCTUM-AUTH-v2" ‖ L(h) ‖ L(nonce) ‖ timestamp_u64_be ‖ L(room_id) ‖ L(server_id)`,
+where `L(x) = len(x)_u32_be ‖ x`.
 
-### 4.2 Authentication (PGP Challenge-Response)
+The host:
+1. refuses if the global failure budget is exhausted (30 failures per 60 s window);
+2. refuses a reused nonce or a challenge older than 120 s;
+3. derives the fingerprint from the public key itself:
+   `SHA-256("sanctum-fingerprint-v1:" ‖ pk)[..20]` as 40 hex characters
+   (weak keys are rejected) — a declared fingerprint is never trusted;
+4. verifies the signature strictly (`verify_strict`);
+5. admits an **active member**, or a newcomer holding a **valid invitation**
+   (§3.3). Anything else is refused and the connection closed.
 
-All messages below are encrypted by the Noise NK transport.
+Each connection gets exactly one attempt; the whole handshake + authentication
+must complete within 30 s.
 
-```
-Client                              Host
-  │                                   │
-  │◄── AuthChallenge ────────────────┤
-  │   { nonce: [u8;32],             │
-  │     timestamp: u64,             │
-  │     room_id: [u8;16],           │
-  │     server_id: [u8;32] }        │
-  │                                   │
-  │   [Client verifies:              │
-  │    server_id == SHA256(host      │
-  │    Noise static pubkey)]         │
-  │   [Client signs challenge        │
-  │    with PGP private key]         │
-  │                                   │
-  ├── AuthResponse ─────────────────►│
-  │   { pgp_fingerprint,            │
-  │     signature,                   │
-  │     pgp_public_key,             │
-  │     display_alias }              │
-  │                                   │
-  │   [Host verifies:                │
-  │    1. fingerprint in allowlist   │
-  │    2. signature valid            │
-  │    3. nonce not replayed (120s)  │
-  │    4. timestamp ±120s]           │
-  │                                   │
-  │◄── AuthResult ──────────────────┤
-  │   { success: bool,              │
-  │     member_role: Role,           │
-  │     room_state: RoomState }      │
-```
+### 3.3 Invitations
 
-`server_id` = SHA-256 of the host's static Noise public key. Binds authentication to a specific server, preventing challenge relay attacks.
-
-`RoomState` includes member list and all PreKey Bundles, avoiding per-peer round-trips during join.
-
-### 4.3 Session Establishment (X3DH)
-
-After authentication, the joining client establishes pairwise Double Ratchet sessions with all existing members.
+An invitation is `base64url(JSON(InviteToken))`, issued by the owner
+(`/invite <fingerprint>` in the owner's chat, or `sanctum room invite … --host-key`):
 
 ```
-New Member                          Existing Members (via Host relay)
-  │                                   │
-  ├── PublishBundle ────────────────►│  (host stores bundle)
-  │                                   │  (host broadcasts PeerJoined)
-  │                                   │
-  │  [For each existing member,       │
-  │   in parallel:]                   │
-  │                                   │
-  │  Compute X3DH:                    │
-  │  DH1 = DH(IK_self, SPK_peer)    │
-  │  DH2 = DH(EK_self, IK_peer)     │
-  │  DH3 = DH(EK_self, SPK_peer)    │
-  │  DH4 = DH(EK_self, OPK_peer)    │  (optional)
-  │  SK = KDF(DH1 ‖ DH2 ‖ DH3      │
-  │       [‖ DH4])                    │
-  │                                   │
-  ├── RatchetKeyExchange ──────────►│  {IK, EK, OPK_id, initial_ciphertext}
-  │                                   │
-  │  [All sessions established]       │
-  │  → Host broadcasts PeerReady     │
+InviteToken { room_id, onion_address, port, host_noise_pubkey,
+              inviter_fingerprint, invited_fingerprint, role, expires_at, signature }
+signature = Ed25519(owner_sk, "SANCTUM-INVITE-v2" ‖ L(room_id) ‖ L(onion) ‖ L(port)
+                    ‖ L(host_noise_pubkey) ‖ L(inviter) ‖ L(invited) ‖ L(role) ‖ L(expires_at))
 ```
 
-### 4.4 Messaging
+The host accepts it only if: it is for this room and this host session (Noise
+key), the inviter is the owner and the signature verifies with the owner's key,
+it has not expired, the invitee is the proven fingerprint, the role is not
+`Owner`, and it has never been used. The member is then added with its proven
+public key. Members reconnect without an invitation.
+
+### 3.4 Prekey bundles
+
+Right after authentication each client sends `PublishBundle`:
 
 ```
-MessageEnvelope {
-    sender_fingerprint: Fingerprint,
-    sequence_number: u64,          // monotonic per sender per room
-    nonce: [u8; 12],               // unique AEAD nonce
-    timestamp: u64,                // Unix timestamp (seconds)
-    ciphertext: Vec<u8>,           // Double Ratchet encrypted, padded to 256B blocks
-    ratchet_header: RatchetHeader, // DH ratchet public key + chain counters
-}
+PreKeyBundle { owner_fingerprint, ed25519_public_key, identity_key (X25519 IK),
+               signed_pre_key (X25519 SPK), spk_signature, one_time_pre_keys[] }
+spk_signature = Ed25519(identity_sk, "SANCTUM-SPK-v2" ‖ IK ‖ SPK)
 ```
 
-For a group of N members: the sender encrypts the message N-1 times (once per peer ratchet) and sends N-1 `RoomMessage` frames via the host.
+A bundle is valid only if the signature verifies **and**
+`Fingerprint(ed25519_public_key) == owner_fingerprint`. The host stores the bundle
+of the authenticated identity only, then sends the publisher a `BundleResponse`
+for every member who published before it, each carrying **one** one-time prekey
+(OPK) that is never handed out again. Below 5 remaining OPKs the owner receives
+`OPKDepleted` and answers with `RefreshOPK`. OPKs are not signed (as in X3DH):
+substituting one does not let the host compute the shared secret.
 
-### 4.5 Backlog Delivery (Persistent Mode)
+### 3.5 Pairwise sessions (X3DH + Double Ratchet)
+
+The later publisher initiates X3DH towards each earlier one and sends a
+`RatchetKeyExchange` (routed to that recipient only, sender stamped by the host)
+containing its own signed identity (a bundle without OPKs), its ephemeral key,
+the OPK id, and a first ratchet message with an empty plaintext so that the
+responder can answer immediately. The responder verifies that the signed identity
+belongs to the stamped sender, deletes the OPK, and both have a session. If both
+sides ever initiate, the session started by the smaller fingerprint wins on both
+sides.
+
+X3DH (X25519): `SK = HKDF-SHA256(salt = 0³², ikm = 0xFF³² ‖ DH1 ‖ DH2 ‖ DH3 [‖ DH4],
+info = "SANCTUM-X3DH-v2")`; non-contributory (low-order) keys are rejected.
+
+Double Ratchet (Signal specification, revision 4):
+- `KDF_RK(rk, dh) = HKDF-SHA256(salt = rk, ikm = dh, info = "SANCTUM-DR-RK-v2")` → (rk′, ck)
+- `KDF_CK(ck)`: mk = HMAC-SHA256(ck, 0x01), ck′ = HMAC-SHA256(ck, 0x02)
+- mk → HKDF-SHA256(salt = 0³², info = "SANCTUM-DR-MSG-v2") → ChaCha20-Poly1305 key ‖ nonce
+- AD = `"SANCTUM-DR-v2" ‖ IK_initiator ‖ IK_responder ‖ dh_public ‖ pn_u32_be ‖ n_u32_be`
+- at most 256 skipped keys per chain and 1 000 overall; decryption is
+  transactional (a failed message never changes the session).
+
+Known-answer vectors produced by an independent Python implementation live in
+`crates/sanctum-crypto/tests/kat/`.
+
+### 3.6 Room messages
+
+A message is encrypted once per member with the pairwise session and sent as one
+`RoomMessage` per recipient:
 
 ```
-Host                               Client
-  │                                   │
-  ├── BacklogStart { count: N } ────►│
-  ├── RoomMessage (backlog #1) ─────►│
-  ├── RoomMessage (backlog #2) ─────►│
-  ├── ...                            │
-  ├── BacklogEnd ───────────────────►│
-  │                                   │
-  │◄── BacklogAck { last_seq: N } ──┤
-  │                                   │
-  │   [Host deletes delivered msgs]   │
+RoomMessage { sender_fingerprint, sequence_number, envelope: Envelope { recipient_fingerprint, header, ciphertext } }
+plaintext  = pad(timestamp_u64_be ‖ utf8 text, 256)       (text ≤ 4 000 bytes)
+pad(m)     = len(m)_u32_be ‖ m ‖ random bytes up to a multiple of 256
 ```
 
-If the client crashes before sending `BacklogAck`, the backlog is preserved and redelivered on the next connection. Idempotence is guaranteed by the sequence number anti-replay window.
+The host forwards each `RoomMessage` to `envelope.recipient_fingerprint` only, after
+overwriting `sender_fingerprint` with the authenticated identity. It never holds a
+key that decrypts the envelope. A message for which no member has a session is
+not sent; a message that fails to decrypt is shown as
+`[message indéchiffrable de X]`, never as raw bytes.
 
-### 4.6 Keepalive
+### 3.7 Presence and keepalive
 
-Both sides send `Ping` every 60 seconds. The other side responds with `Pong`. If 3 consecutive pings go unanswered (180s timeout), the connection is considered dead.
+`PeerReady { fingerprint, display_alias }` announces members; `PeerLeft` tells
+peers to drop a member's session. The host sanitizes aliases to `[A-Za-z0-9_-]{1,20}`;
+clients sanitize everything again before display. Clients send `Ping` every 30 s;
+a member silent for 120 s is disconnected. Three invalid frames close the
+connection.
 
----
+### 3.8 Safety numbers
 
-## 5. Anti-Replay
+`/verify <alias>` shows 12 groups of 5 digits derived from
+`SHA-512("SANCTUM-SAFETY-v2" ‖ L(fp_a) ‖ L(pk_a) ‖ L(fp_b) ‖ L(pk_b))` (pairs sorted by
+fingerprint). Both members see the same number; comparing it out of band detects a
+host that would have introduced a fake member or keys.
 
-- **Monotonic counter**: per sender, per room. Reject if `seq ≤ last_accepted` (with 32-message reordering window).
-- **Bitmap window**: 64-bit sliding window to detect replays within the tolerance window.
-- **Nonce**: 12 bytes, derived from counter + salt. Uniqueness guaranteed by Double Ratchet.
-- **Timestamp**: ±120s tolerance. Used for backlog expiration only, NOT for anti-replay.
+## 4. Host-side Tor control
 
----
-
-## 6. Error Handling
-
-| Error | Action | Response Code |
-|-------|--------|---------------|
-| Version incompatible | Close immediately | `Error::VersionMismatch` |
-| Auth failed (3 attempts) | Close + ban 5 min | `Error::AuthFailed` |
-| Malformed message | Ignore, safe log | `Error::MalformedMessage` |
-| Invalid sequence number | Ignore | `Error::ReplayDetected` |
-| Room full | Reject | `Error::RoomFull` |
-| Member revoked | Disconnect | `Error::Revoked` |
-| Ratchet desynchronized | Re-keying (max 3×) | `Error::RatchetDesync` |
-
----
-
-## 7. Message Padding
-
-All `RoomMessage` payloads are padded to multiples of 256 bytes before encryption to prevent message-length metadata leakage. Average overhead: ~128 bytes. Maximum message size: 64 KiB (after padding).
-
----
-
-## 8. Cryptographic Algorithms
-
-| Purpose | Algorithm | Parameters |
-|---------|-----------|------------|
-| Transport encryption | Noise NK | ChaChaPoly, X25519, SHA-256 |
-| Key agreement | X3DH | X25519 |
-| E2E messaging | Double Ratchet | X25519 DH ratchet, HKDF-SHA256, AES-256-GCM |
-| Authentication | PGP | Ed25519 signing (recommended subkey) |
-| Storage encryption | AES-256-GCM | 12-byte unique nonce per field |
-| Key derivation | Argon2id | m=256MiB, t=4, p=2 |
-| Subkey derivation | HKDF-SHA256 | Context-specific info strings |
+The host creates an ephemeral `ED25519-V3` onion service (`Flags=DiscardPK`) through
+the control port, authenticated with **SAFECOOKIE** only (the control port's
+`SERVERHASH` is verified before the client proof is sent). Control ports without
+authentication are refused.

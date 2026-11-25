@@ -1,169 +1,137 @@
-# Sanctum Runbook
+# Sanctum — Runbook (v0.1.1)
 
-Guide opérationnel pour installer, configurer et diagnostiquer Sanctum.
+Guide opérationnel : installer, utiliser et diagnostiquer Sanctum.
+**Ne lancez jamais `sanctum` avec `sudo`.**
 
-## Installation
+## 1. Installation
 
-### 1. Installer Tor
+### Tor
 
 ```bash
-# Automatique
-./scripts/setup-tor.sh
+./scripts/setup-tor.sh          # installe Tor, configure le control port
+```
 
-# Manuel (Debian/Ubuntu)
+Ou à la main (Debian/Ubuntu) :
+
+```bash
 sudo apt install tor
-sudo systemctl enable tor
-sudo systemctl start tor
+# /etc/tor/torrc doit contenir :
+#   ControlPort 9051
+#   CookieAuthentication 1
+#   CookieAuthFileGroupReadable 1
+sudo systemctl restart tor
+sudo usermod -aG debian-tor "$USER"   # puis se déconnecter / reconnecter
 ```
 
-Vérifier que le control port est activé dans `/etc/tor/torrc` :
+Sanctum s'authentifie au control port en **SAFECOOKIE** et refuse un control port
+sans authentification.
 
-```
-ControlPort 9051
-CookieAuthentication 1
-```
-
-### 2. Builder Sanctum
+### Sanctum
 
 ```bash
-# Debug
-cargo build --workspace
-
-# Release (statique)
-cargo build --release --target x86_64-unknown-linux-musl
-
-# Copier le binaire
-cp target/x86_64-unknown-linux-musl/release/sanctum /usr/local/bin/
+sudo apt install protobuf-compiler    # requis pour compiler
+cargo build --release                 # Rust ≥ 1.89
+install -m 0755 target/release/sanctum ~/.local/bin/
 ```
 
-### 3. Initialiser un profil
+## 2. Identité
 
 ```bash
 sanctum init --alias alice
-# Crée ~/.sanctum/ avec permissions 0700
 ```
 
-### 4. Importer une clé PGP
+Crée `~/.sanctum/` (0700) avec une clé Ed25519 **chiffrée** par une passphrase
+(Argon2id + ChaCha20-Poly1305, 8 caractères minimum, demandée deux fois).
+`host`, `join` et `room invite` redemandent la passphrase. Pour un script, la
+variable `SANCTUM_PASSPHRASE` évite la saisie ; elle est visible des autres
+processus du même utilisateur : à réserver aux tests.
 
 ```bash
-sanctum identity import ~/.gnupg/signing.key
-sanctum identity show
-# Affiche : [sanctum] fingerprint: [4A7B...5A6B]
+sanctum identity show       # affiche le fingerprint (sans passphrase)
+sanctum status              # état du profil
 ```
 
-## Héberger une room
-
-### Room éphémère (zéro trace)
+Clé créée par une version antérieure (non chiffrée) :
 
 ```bash
-sanctum host create ops-room --mode ephemeral --chat
+sanctum identity protect    # la chiffre avec une passphrase
 ```
 
-- Aucun fichier créé dans `~/.sanctum/data/`
-- Les messages existent uniquement en RAM
-- Tout disparaît à l'arrêt
-
-### Room persistante (backlog chiffré)
+## 3. Héberger une room
 
 ```bash
-sanctum host create ops-room --mode persistent \
-    --backlog-max 500 --backlog-hours 72 --chat
+sanctum host create ops-room --chat
 ```
 
-- Backlog chiffré dans `~/.sanctum/data/db.sqlite`
-- GC automatique toutes les 15 minutes
-- Les messages de plus de 72h sont purgés
+L'hôte crée un service onion éphémère (adresse nouvelle à chaque lancement),
+affiche votre fingerprint et ouvre le chat en tant qu'owner. Le mode persistant
+n'existe pas encore (`--mode persistent` est refusé).
 
 ### Inviter un membre
 
-```bash
-# Sur le host
-sanctum room invite <room_id> <fingerprint_bob> --role member
-# → Affiche un token base64url
+1. Le membre vous transmet son fingerprint (`sanctum identity show`) par un canal sûr.
+2. Dans le chat owner : `/invite <fingerprint> [heures]` (24 h par défaut, 168 max).
+3. Transmettez le jeton affiché hors bande. Il est signé, nominatif, valable pour
+   cette session d'hôte uniquement, et **à usage unique**.
 
-# Transmettre le token à Bob via un canal sécurisé (Signal, en personne, etc.)
-```
-
-## Rejoindre une room
+Hors du chat (autre terminal, même identité owner) :
 
 ```bash
-sanctum join <invite_token>
-# → Connexion Tor → Handshake Noise → Auth PGP → Session interactive
+sanctum room invite <fingerprint> --room-onion <onion> --room-port <port> \
+    --room-id <room_id> --host-key <host_key>
 ```
 
-## Diagnostics
+(la commande exacte est affichée au lancement de l'hôte).
 
-### Vérifier l'état du système
+## 4. Rejoindre et discuter
 
 ```bash
-sanctum status
+sanctum join <jeton>
 ```
 
-Affiche : profil, identité, ports Tor, configuration host.
+| Commande | Effet |
+|----------|-------|
+| `/who` | membres connectés et état du chiffrement (🔒 / ⏳) |
+| `/verify <alias>` | safety number à comparer de vive voix |
+| `/invite <fp> [h]` | (owner) émettre une invitation |
+| `/help`, `/exit` | aide, quitter |
 
-### Vérifier la connectivité Tor
+Un message n'est envoyé qu'aux membres avec qui le chiffrement est établi ; s'il
+n'y en a aucun, il n'est pas envoyé.
+
+## 5. Test local sans Tor
 
 ```bash
-# SOCKS proxy fonctionne ?
-curl --socks5 127.0.0.1:9050 https://check.torproject.org/api/ip
-
-# Control port accessible ?
-echo 'PROTOCOLINFO' | nc 127.0.0.1 9051
+sanctum host create test --local --chat          # terminal 1
+sanctum join <jeton>                             # terminal 2 (autre HOME/utilisateur)
 ```
 
-### Problèmes courants
+Pour simuler plusieurs utilisateurs sur une machine : `HOME=/tmp/u2 sanctum init`,
+puis `HOME=/tmp/u2 sanctum join …`.
+
+## 6. Diagnostic
 
 | Symptôme | Cause probable | Solution |
-|----------|---------------|----------|
-| "Tor unavailable" | Tor daemon pas lancé | `sudo systemctl start tor` |
-| "cannot read the Tor cookie" | Permissions cookie | `sudo usermod -aG debian-tor $USER`, then log out and back in. Never run sanctum with sudo. |
-| "connection refused :9738" | Firewall local | Vérifier que localhost:9738 est ouvert |
-| "nonce already used" | Bug de replay ou clock skew | Vérifier l'horloge système (`timedatectl`) |
-| "fingerprint not authorized" | Pas invité | Vérifier le token avec l'host |
-| "room full" | max_members atteint | Host doit augmenter la limite |
-| Terminal cassé après crash | Raw mode pas restauré | `reset` dans le terminal |
+|----------|----------------|----------|
+| `cannot read the Tor cookie` | utilisateur hors du groupe Tor | `sudo usermod -aG debian-tor $USER`, se reconnecter |
+| `does not offer SAFECOOKIE` / `unauthenticated` | torrc sans `CookieAuthentication 1` | corriger torrc, redémarrer Tor |
+| `could not prove it knows the cookie` | faux control port sur 9051 | vérifier quel processus écoute (`ss -ltnp`) |
+| `wrong passphrase or corrupted identity file` | passphrase erronée | ressaisir ; sinon restaurer `~/.sanctum/keys` |
+| `stored unencrypted` | clé d'une ancienne version | `sanctum identity protect` |
+| `not a member of this room and no invitation` | pas encore invité | demander un jeton à l'owner |
+| `invitation already used` / `expired` | jeton consommé ou périmé | demander un nouveau jeton |
+| `invitation is for another host session` | l'hôte a redémarré (nouvelle clé Noise) | nouveau jeton |
+| `refusing to connect … not a .onion address` | jeton pointant vers une IP publique | refusé par conception (pas de clearnet) |
+| `⏳` qui ne passe pas à `🔒` | pair parti ou échange de clés rejeté | `/who`, faire reconnecter le pair |
+| Déconnexion après 2 minutes | client bloqué (pas de PING) | relancer `sanctum join` |
 
-### Vérifier le mode éphémère (AT-07)
+Journaux : `sanctum --log-level debug …` (stderr). Ils ne contiennent ni
+fingerprint, ni alias, ni adresse, ni contenu.
 
-```bash
-./scripts/check-no-disk-writes.sh target/release/sanctum
-```
+## 7. Hygiène de la machine hôte
 
-### Logs
-
-Par défaut, les logs sont désactivés. Pour activer :
-
-```bash
-sanctum --log-level debug host create test-room --chat
-# Ou via config.toml :
-# [logging]
-# level = "debug"
-```
-
-Les logs n'incluent **jamais** de secrets (clés, fingerprints complets, contenus de messages).
-
-## Maintenance
-
-### Purge manuelle du backlog
-
-```sql
--- Via sqlite3 (mode persistant uniquement)
-sqlite3 ~/.sanctum/data/db.sqlite
-DELETE FROM messages WHERE stored_at < strftime('%s', 'now') - 86400;
-VACUUM;
-```
-
-### Réinitialiser le profil
-
-```bash
-rm -rf ~/.sanctum/
-sanctum init --alias alice
-```
-
-### Mettre à jour
-
-```bash
-git pull
-cargo build --release --target x86_64-unknown-linux-musl
-cp target/x86_64-unknown-linux-musl/release/sanctum /usr/local/bin/
-```
+- Désactiver le swap et les core dumps (`swapoff -a`, `ulimit -c 0`) : `mlock`
+  n'est pas encore utilisé.
+- Système à jour, Tor à jour, aucun autre service exposé.
+- Vérifier régulièrement que le mode éphémère n'écrit rien :
+  `./scripts/check-no-disk-writes.sh target/release/sanctum`.
