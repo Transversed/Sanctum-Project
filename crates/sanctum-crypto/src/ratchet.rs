@@ -110,7 +110,8 @@ pub fn kdf_rk(root_key: &[u8; 32], dh_output: &[u8; 32]) -> Result<(Key, Key), S
 }
 
 fn hmac_byte(key: &[u8; 32], byte: u8) -> Key {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
     mac.update(&[byte]);
     Zeroizing::new(mac.finalize().into_bytes().into())
 }

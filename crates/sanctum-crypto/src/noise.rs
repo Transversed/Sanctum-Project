@@ -24,11 +24,17 @@ pub const PROLOGUE: &[u8] = b"SANCTUM-NOISE-NK-v2";
 /// Length of the handshake hash (SHA-256).
 pub const HANDSHAKE_HASH_LEN: usize = 32;
 
+fn builder() -> Result<Builder<'static>, SanctumError> {
+    let params = NOISE_PATTERN
+        .parse()
+        .map_err(|e| SanctumError::MalformedMessage(format!("noise params: {e}")))?;
+    Ok(Builder::new(params))
+}
+
 /// Generate a static Noise keypair for the host.
 /// Returns (private_key, public_key) both 32 bytes.
 pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), SanctumError> {
-    let builder = Builder::new(NOISE_PATTERN.parse().unwrap());
-    let keypair = builder
+    let keypair = builder()?
         .generate_keypair()
         .map_err(|e| SanctumError::MalformedMessage(format!("noise keygen: {e}")))?;
     Ok((keypair.private, keypair.public))
@@ -38,7 +44,7 @@ pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), SanctumError> {
 ///
 /// The host provides its static private key.
 pub fn responder(static_private: &[u8]) -> Result<HandshakeState, SanctumError> {
-    Builder::new(NOISE_PATTERN.parse().unwrap())
+    builder()?
         .prologue(PROLOGUE)
         .local_private_key(static_private)
         .build_responder()
@@ -49,7 +55,7 @@ pub fn responder(static_private: &[u8]) -> Result<HandshakeState, SanctumError> 
 ///
 /// The client provides the host's static public key (from the invite token).
 pub fn initiator(remote_static_public: &[u8]) -> Result<HandshakeState, SanctumError> {
-    Builder::new(NOISE_PATTERN.parse().unwrap())
+    builder()?
         .prologue(PROLOGUE)
         .remote_public_key(remote_static_public)
         .build_initiator()

@@ -38,8 +38,7 @@ impl RoomService {
         let mut validated_config = config;
         validated_config.validate();
         let room = Room::new(name, mode, validated_config, owner);
-        self.room = Some(room);
-        Ok(self.room.as_ref().unwrap())
+        Ok(&*self.room.insert(room))
     }
 
     /// Load an existing room (from storage or from AuthResult).

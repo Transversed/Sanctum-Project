@@ -123,7 +123,7 @@ impl TorController {
 
         if self.mock {
             let onion = generate_mock_onion();
-            let service_id = onion.strip_suffix(".onion").unwrap().to_string();
+            let service_id = onion.strip_suffix(".onion").unwrap_or(&onion).to_string();
             let hs = HiddenService {
                 onion_address: onion,
                 port: self.config.hidden_service_port,

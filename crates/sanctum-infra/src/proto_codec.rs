@@ -131,9 +131,8 @@ pub fn proto_decode(frame: &Frame) -> Result<WireMessage, SanctumError> {
 // ============================================================
 
 fn encode_pb<M: Message>(msg: &M) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(msg.encoded_len());
-    msg.encode(&mut buf).expect("protobuf encoding cannot fail");
-    buf
+    // Encoding into a growable Vec cannot fail.
+    msg.encode_to_vec()
 }
 
 fn decode_pb<M: Message + Default>(data: &[u8]) -> Result<M, SanctumError> {

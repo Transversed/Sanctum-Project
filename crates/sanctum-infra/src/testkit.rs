@@ -1,7 +1,9 @@
 //! Test support: a real host on loopback with an owner identity, and
 //! helpers to issue invitations and connect members.
 //!
-//! Compiled only for tests and with the `test-support` feature.
+//! Compiled only for tests and with the `test-support` feature. Panicking
+//! on setup failures is the desired behaviour here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::client_connector::{self, ClientCredentials, ConnectedSession};
 use crate::host_listener::{HostLimits, HostListener};
