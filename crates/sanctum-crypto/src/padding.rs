@@ -93,7 +93,7 @@ mod tests {
     fn short_and_long_same_block() {
         // "ok" and a 200-char message should both pad to 256
         let short = pad(b"ok", 256);
-        let long = pad(&vec![0x41u8; 200], 256);
+        let long = pad(&[0x41u8; 200], 256);
         assert_eq!(short.len(), 256);
         assert_eq!(long.len(), 256);
     }

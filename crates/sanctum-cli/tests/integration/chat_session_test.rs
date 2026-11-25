@@ -18,6 +18,7 @@ fn fp(s: &str) -> Fingerprint {
     Fingerprint::new(format!("{:0>40}", s)).unwrap()
 }
 
+#[allow(dead_code)] // payloads kept for debugging failed assertions
 #[derive(Debug, Clone)]
 enum UiEvent {
     Init,
@@ -43,8 +44,8 @@ impl MockUi {
 }
 
 impl UiPort for MockUi {
-    fn read_input(&self) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
-        async { Err(SanctumError::ConnectionLost("mock".into())) }
+    async fn read_input(&self) -> Result<String, SanctumError> {
+        Err(SanctumError::ConnectionLost("mock".into()))
     }
     fn print_message(&self, _role: &str, sender: &str, content: &str, _ts: u64) {
         self.events.lock().unwrap().push(UiEvent::Message {

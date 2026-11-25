@@ -202,10 +202,8 @@ mod tests {
     }
 
     impl UiPort for MockUi {
-        fn read_input(
-            &self,
-        ) -> impl std::future::Future<Output = Result<String, SanctumError>> + Send {
-            async { Ok("/exit".into()) }
+        async fn read_input(&self) -> Result<String, SanctumError> {
+            Ok("/exit".into())
         }
         fn print_message(&self, _role: &str, sender: &str, content: &str, _ts: u64) {
             self.messages

@@ -4,7 +4,7 @@
 
 use sanctum_app::host_service::HostService;
 use sanctum_app::room_service::RoomService;
-use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Role};
+use sanctum_domain::entities::member::{DisplayAlias, Role};
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_infra::identity_pgp::IdentityAdapter;
 use sanctum_infra::storage_memory::MemoryStorageAdapter;
@@ -253,8 +253,10 @@ fn host_routes_to_ready_peers_only() {
 fn room_full_prevents_new_members() {
     let alice = IdentityAdapter::generate();
 
-    let mut config = RoomConfig::default();
-    config.max_members = 2;
+    let config = RoomConfig {
+        max_members: 2,
+        ..RoomConfig::default()
+    };
 
     let mut room_svc = RoomService::new();
     room_svc

@@ -75,7 +75,7 @@ fn auth_rejects_non_invited_fingerprint() {
 fn client_detects_server_id_mismatch() {
     let host_noise_pubkey = vec![42u8; 32];
     let fake_noise_pubkey = vec![99u8; 32];
-    let mut auth_svc = AuthService::new();
+    let auth_svc = AuthService::new();
 
     let challenge = auth_svc.create_challenge(
         &sanctum_domain::entities::room::RoomId::new(),
