@@ -3,41 +3,12 @@
 //!
 //! Uses localhost TCP only — no Tor. All in-memory.
 
-use sanctum_app::host_service::HostService;
 use sanctum_crypto::ratchet::Header;
-use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Member, Role};
-use sanctum_domain::entities::room::{Room, RoomConfig, RoomMode};
-use sanctum_domain::events::SanctumEvent;
-use sanctum_infra::client_connector;
 use sanctum_infra::codec::message_types;
 use sanctum_infra::e2e_session::{E2eSession, InitialMessage, PeerPrivateKeys};
-use sanctum_infra::host_listener::HostListener;
 use sanctum_infra::proto_codec::{self, pb, WireMessage};
-use tokio::sync::broadcast;
+use sanctum_infra::testkit::TestHost;
 use tokio::time::{timeout, Duration};
-use tokio_util::sync::CancellationToken;
-
-fn make_host_room() -> Room {
-    let owner_fp = Fingerprint::new("0".repeat(40)).unwrap();
-    let owner = Member::new(
-        owner_fp,
-        vec![0u8; 32],
-        DisplayAlias::new("host-owner").unwrap(),
-        Role::Owner,
-        0,
-    );
-    Room::new(
-        "e2e-test",
-        RoomMode::Ephemeral,
-        RoomConfig::default(),
-        owner,
-    )
-}
-
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
 
 fn build_room_msg(
     sender_fp: &str,
@@ -71,46 +42,11 @@ fn decode_ratchet_header(rh: pb::RatchetHeader) -> Header {
 
 #[tokio::test]
 async fn two_clients_exchange_e2e_messages() {
-    let shutdown = CancellationToken::new();
-    let (noise_priv, noise_pub) = sanctum_infra::noise_keygen();
-
-    let (event_tx, _) = broadcast::channel::<SanctumEvent>(16);
-    let host_svc = HostService::new(make_host_room(), event_tx);
-
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-
-    let listener = HostListener::new(
-        addr.clone(),
-        host_svc,
-        noise_pub.clone(),
-        noise_priv,
-        shutdown.clone(),
-    );
-    tokio::spawn(async move {
-        let _ = listener.run().await;
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Connect Alice
-    let alice_fp = Fingerprint::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
-    let mut alice = timeout(
-        Duration::from_secs(5),
-        client_connector::connect_and_auth(&addr, &alice_fp, "alice", &noise_pub),
-    )
-    .await
-    .expect("alice connect timeout")
-    .expect("alice connect");
-
-    // Connect Bob
-    let bob_fp = Fingerprint::new("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
-    let mut bob = timeout(
-        Duration::from_secs(5),
-        client_connector::connect_and_auth(&addr, &bob_fp, "bob", &noise_pub),
-    )
-    .await
-    .expect("bob connect timeout")
-    .expect("bob connect");
+    let host = TestHost::start().await;
+    let (alice_id, mut alice) = host.join("alice").await;
+    let alice_fp = alice_id.fingerprint().clone();
+    let (bob_id, mut bob) = host.join("bob").await;
+    let bob_fp = bob_id.fingerprint().clone();
 
     // Drain PeerReady: Alice gets notified Bob joined; Bob gets notified Alice exists
     let frame = timeout(Duration::from_secs(5), alice.transport.recv_frame())
@@ -195,42 +131,15 @@ async fn two_clients_exchange_e2e_messages() {
         decrypted, plaintext_ba,
         "Alice failed to decrypt Bob's reply"
     );
-
-    shutdown.cancel();
 }
 
 #[tokio::test]
 async fn multiple_messages_forward_secrecy() {
-    let shutdown = CancellationToken::new();
-    let (noise_priv, noise_pub) = sanctum_infra::noise_keygen();
-
-    let (event_tx, _) = broadcast::channel::<SanctumEvent>(16);
-    let host_svc = HostService::new(make_host_room(), event_tx);
-
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-
-    let listener = HostListener::new(
-        addr.clone(),
-        host_svc,
-        noise_pub.clone(),
-        noise_priv,
-        shutdown.clone(),
-    );
-    tokio::spawn(async move {
-        let _ = listener.run().await;
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let alice_fp = Fingerprint::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
-    let mut alice = client_connector::connect_and_auth(&addr, &alice_fp, "alice", &noise_pub)
-        .await
-        .unwrap();
-
-    let bob_fp = Fingerprint::new("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
-    let mut bob = client_connector::connect_and_auth(&addr, &bob_fp, "bob", &noise_pub)
-        .await
-        .unwrap();
+    let host = TestHost::start().await;
+    let (alice_id, mut alice) = host.join("alice").await;
+    let alice_fp = alice_id.fingerprint().clone();
+    let (bob_id, mut bob) = host.join("bob").await;
+    let _bob_fp = bob_id.fingerprint().clone();
 
     // Drain PeerReady
     alice.transport.recv_frame().await.unwrap();
@@ -292,6 +201,4 @@ async fn multiple_messages_forward_secrecy() {
         let decrypted = bob_e2e.decrypt(&hdr, &msg.ciphertext).unwrap();
         assert_eq!(&decrypted, plaintext, "mismatch on message {i}");
     }
-
-    shutdown.cancel();
 }

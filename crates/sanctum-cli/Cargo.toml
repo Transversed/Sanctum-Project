@@ -45,6 +45,7 @@ crossterm.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+sanctum-infra = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 bytes.workspace = true
 

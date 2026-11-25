@@ -39,9 +39,9 @@ pub mod message_types {
     pub const HANDSHAKE_INIT: u8 = 0x01;
     /// Noise handshake response (H→C).
     pub const HANDSHAKE_RESP: u8 = 0x02;
-    /// PGP auth challenge (H→C).
+    /// Auth challenge (H→C).
     pub const AUTH_CHALLENGE: u8 = 0x03;
-    /// PGP auth response (C→H).
+    /// Auth response, Ed25519 signature bound to the channel (C→H).
     pub const AUTH_RESPONSE: u8 = 0x04;
     /// Auth result (H→C).
     pub const AUTH_RESULT: u8 = 0x05;

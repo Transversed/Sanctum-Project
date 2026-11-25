@@ -6,7 +6,7 @@
 
 use crate::config::Config;
 use clap::Subcommand;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 
 /// Identity subcommands.
 #[derive(Subcommand)]

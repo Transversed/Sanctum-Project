@@ -1,10 +1,10 @@
-//! Room member, PGP fingerprint, role, alias.
+//! Room member, fingerprint, role, alias.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// PGP fingerprint — primary identity in Sanctum (40 hex chars).
+/// Identity fingerprint — derived from the Ed25519 public key (40 hex chars).
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Fingerprint(String);
 
@@ -187,7 +187,7 @@ impl Member {
         }
     }
 
-    /// PGP fingerprint.
+    /// Fingerprint.
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
     }

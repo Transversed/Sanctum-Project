@@ -6,6 +6,7 @@
 
 use sanctum_domain::entities::member::Fingerprint;
 use sanctum_domain::errors::SanctumError;
+use sanctum_domain::ports::identity::{SignatureVerifier, Signer as SignerPort};
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -161,7 +162,58 @@ impl Drop for IdentityAdapter {
     }
 }
 
-/// Derive a 40-char hex fingerprint from an Ed25519 public key.
+/// Fingerprint of raw Ed25519 public key bytes (rejects invalid keys).
+pub fn fingerprint_of_public_key(public_key: &[u8]) -> Result<Fingerprint, SanctumError> {
+    let bytes: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| SanctumError::InvalidSignature)?;
+    let key = VerifyingKey::from_bytes(&bytes).map_err(|_| SanctumError::InvalidSignature)?;
+    if key.is_weak() {
+        return Err(SanctumError::InvalidSignature);
+    }
+    Ok(derive_fingerprint(&key))
+}
+
+/// Stateless Ed25519 verifier (strict verification).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Ed25519Verifier;
+
+impl SignatureVerifier for Ed25519Verifier {
+    fn verify(&self, public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+        let Ok(pk) = <[u8; 32]>::try_from(public_key) else {
+            return false;
+        };
+        let Ok(sig) = <[u8; 64]>::try_from(signature) else {
+            return false;
+        };
+        let Ok(key) = VerifyingKey::from_bytes(&pk) else {
+            return false;
+        };
+        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&sig))
+            .is_ok()
+    }
+
+    fn fingerprint(&self, public_key: &[u8]) -> Result<Fingerprint, SanctumError> {
+        fingerprint_of_public_key(public_key)
+    }
+}
+
+impl SignerPort for IdentityAdapter {
+    fn public_key(&self) -> Vec<u8> {
+        self.public_key_bytes()
+    }
+
+    fn fingerprint(&self) -> &Fingerprint {
+        &self.fingerprint
+    }
+
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        self.signing_key.sign(message).to_bytes().to_vec()
+    }
+}
+
+/// Derive a 40-char hex fingerprint from an Ed25519 public key:
+/// `SHA-256("sanctum-fingerprint-v1:" ‖ pk)[..20]`, uppercase hex.
 fn derive_fingerprint(verifying_key: &VerifyingKey) -> Fingerprint {
     let mut hasher = Sha256::new();
     hasher.update(b"sanctum-fingerprint-v1:");
@@ -233,6 +285,32 @@ mod tests {
     #[test]
     fn rejects_invalid_key_length() {
         assert!(IdentityAdapter::from_key(vec![0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn verifier_accepts_valid_and_rejects_malformed() {
+        let alice = IdentityAdapter::generate();
+        let sig = SignerPort::sign(&alice, b"msg");
+        let v = Ed25519Verifier;
+        assert!(v.verify(&alice.public_key_bytes(), b"msg", &sig));
+        assert!(!v.verify(&alice.public_key_bytes(), b"other", &sig));
+        assert!(!v.verify(&alice.public_key_bytes()[..31], b"msg", &sig));
+        assert!(!v.verify(&alice.public_key_bytes(), b"msg", &sig[..63]));
+        assert!(!v.verify(&[0u8; 32], b"msg", &[0u8; 64]));
+    }
+
+    #[test]
+    fn fingerprint_is_derived_from_the_key() {
+        let alice = IdentityAdapter::generate();
+        let fp = Ed25519Verifier
+            .fingerprint(&alice.public_key_bytes())
+            .unwrap();
+        assert_eq!(&fp, alice.fingerprint());
+        assert!(Ed25519Verifier.fingerprint(&[1u8; 31]).is_err());
+        // Small-order point (identity element) is rejected.
+        let mut identity_point = [0u8; 32];
+        identity_point[0] = 1;
+        assert!(Ed25519Verifier.fingerprint(&identity_point).is_err());
     }
 
     #[test]

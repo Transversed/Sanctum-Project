@@ -13,7 +13,7 @@ pub enum ClientState {
     Disconnected,
     /// Noise handshake in progress.
     Handshaking,
-    /// PGP auth in progress.
+    /// Identity proof in progress.
     Authenticating,
     /// Authenticated, X3DH in progress.
     Synchronizing,
@@ -24,7 +24,7 @@ pub enum ClientState {
 /// Information about the local user in the session.
 #[derive(Debug, Clone)]
 pub struct LocalIdentity {
-    /// Our PGP fingerprint.
+    /// Our fingerprint.
     pub fingerprint: Fingerprint,
     /// Our display alias.
     pub display_alias: DisplayAlias,
@@ -67,7 +67,7 @@ impl ClientService {
         self.state = ClientState::Authenticating;
     }
 
-    /// Transition to synchronizing state (PGP auth complete).
+    /// Transition to synchronizing state (authentication complete).
     pub fn auth_complete(&mut self, identity: LocalIdentity, room_id: RoomId) {
         self.local_identity = Some(identity);
         self.room_id = Some(room_id);

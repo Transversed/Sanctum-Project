@@ -8,12 +8,14 @@ use sanctum_app::room_service::RoomService;
 use sanctum_domain::entities::member::DisplayAlias;
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_domain::events::SanctumEvent;
-use sanctum_infra::client_connector;
+use sanctum_infra::client_connector::{self, ClientCredentials};
 use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::host_listener::HostListener;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
+use sanctum_infra::invite_codec::InviteTarget;
 use sanctum_infra::tor_control::{TorConfig as InfraTorConfig, TorController};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -104,6 +106,7 @@ async fn run_create(
     // Load real identity
     let identity = IdentityAdapter::load_from_disk()
         .map_err(|e| format!("{e}\nRun `sanctum init --alias <name>` first."))?;
+    let identity = Arc::new(identity);
     let owner_fp = identity.fingerprint().clone();
     let alias = config.identity.alias.clone();
     println!("[sanctum] identity: {} ({})", alias, owner_fp.short());
@@ -119,7 +122,7 @@ async fn run_create(
     room_config.validate();
 
     // Noise keypair
-    let (noise_priv, noise_pub): (Vec<u8>, Vec<u8>) = sanctum_infra::noise_keygen();
+    let (noise_priv, noise_pub) = sanctum_infra::noise_keygen()?;
 
     // E2E keys
     let e2e_keys = PeerPrivateKeys::generate(5);
@@ -172,7 +175,7 @@ async fn run_create(
         bind_addr.clone(),
         host_svc,
         noise_pub.clone(),
-        noise_priv.clone(),
+        noise_priv,
         shutdown.clone(),
     );
     let relay_handle = tokio::spawn(async move {
@@ -190,7 +193,8 @@ async fn run_create(
     println!("[sanctum] your fingerprint (share with invitees):");
     println!("  {}", owner_fp.as_str());
     println!();
-    println!("[sanctum] to invite someone (run as the owner, in another terminal):");
+    println!("[sanctum] to invite someone: type `/invite <their_fingerprint>` in the chat,");
+    println!("[sanctum] or run as the owner, in another terminal:");
     println!(
         "  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {} --host-key {}",
         onion_display,
@@ -202,8 +206,12 @@ async fn run_create(
 
     if open_chat {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        let session =
-            client_connector::connect_and_auth(&bind_addr, &owner_fp, &alias, &noise_pub).await?;
+        let creds = ClientCredentials {
+            identity: identity.as_ref(),
+            display_alias: &alias,
+            invite_token: None,
+        };
+        let session = client_connector::connect_and_auth(&bind_addr, &creds, &noise_pub).await?;
 
         println!("[sanctum] connected as owner (Noise OK)");
         println!("[sanctum] type messages or /exit to quit");
@@ -214,6 +222,15 @@ async fn run_create(
             room_mode: room_mode.to_string(),
             tor_connected: !local,
             insecure_plaintext,
+            inviter: Some(chat_loop::InviteIssuer {
+                identity: identity.clone(),
+                target: InviteTarget {
+                    room_id: room.id().clone(),
+                    onion_address: onion_display.clone(),
+                    port: hs.port,
+                    host_noise_pubkey: noise_pub.clone(),
+                },
+            }),
         };
         chat_loop::run_with_config(
             session.transport,

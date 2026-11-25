@@ -1185,6 +1185,7 @@ dependencies = [
  "sanctum-app",
  "sanctum-crypto",
  "sanctum-domain",
+ "sanctum-infra",
  "serde",
  "serde_json",
  "sha2",

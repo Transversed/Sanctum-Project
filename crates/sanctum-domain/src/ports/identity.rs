@@ -1,37 +1,32 @@
-//! PGP identity port (sign, verify, import).
+//! Identity ports: Ed25519 signing and verification.
+//!
+//! A Sanctum identity is an Ed25519 key pair. Its fingerprint is derived
+//! from the public key by the adapter; the host never trusts a fingerprint
+//! it did not compute itself (invariant I2).
 
 use crate::entities::member::Fingerprint;
 use crate::errors::SanctumError;
 
-/// PGP identity port.
-pub trait IdentityPort: Send + Sync {
-    /// Sign data with local PGP key. Returns detached signature.
-    fn sign(
-        &self,
-        data: &[u8],
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, SanctumError>> + Send;
+/// Signature verification and fingerprint derivation (stateless).
+pub trait SignatureVerifier: Send + Sync {
+    /// Verify `signature` over `message` with `public_key`.
+    ///
+    /// Must use strict verification and return `false` on any malformed
+    /// input (wrong lengths, invalid points) instead of an error.
+    fn verify(&self, public_key: &[u8], message: &[u8], signature: &[u8]) -> bool;
 
-    /// Verify a PGP signature.
-    fn verify(
-        &self,
-        data: &[u8],
-        signature: &[u8],
-        signer_key: &[u8],
-    ) -> impl std::future::Future<Output = Result<bool, SanctumError>> + Send;
+    /// Derive the fingerprint of a public key.
+    fn fingerprint(&self, public_key: &[u8]) -> Result<Fingerprint, SanctumError>;
+}
 
-    /// Local PGP fingerprint.
-    fn local_fingerprint(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Fingerprint, SanctumError>> + Send;
+/// Local signing identity.
+pub trait Signer: Send + Sync {
+    /// Public key bytes.
+    fn public_key(&self) -> Vec<u8>;
 
-    /// Local PGP public key bytes.
-    fn local_public_key(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, SanctumError>> + Send;
+    /// Fingerprint of the public key.
+    fn fingerprint(&self) -> &Fingerprint;
 
-    /// Import a peer's PGP public key.
-    fn import_public_key(
-        &self,
-        key_data: &[u8],
-    ) -> impl std::future::Future<Output = Result<Fingerprint, SanctumError>> + Send;
+    /// Sign `message`.
+    fn sign(&self, message: &[u8]) -> Vec<u8>;
 }

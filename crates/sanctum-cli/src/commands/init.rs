@@ -8,7 +8,7 @@
 //! - data/ (empty, for persistent mode)
 
 use crate::config::Config;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
