@@ -40,6 +40,8 @@ TRACE_FILE="$WORK_DIR/trace.log"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 export HOME="$WORK_DIR/home"
+# Non-interactive passphrase for the throw-away identity (test only).
+export SANCTUM_PASSPHRASE="ci-check-passphrase"
 mkdir -p "$HOME"
 cd "$WORK_DIR"
 

@@ -2,15 +2,14 @@
 //!
 //! Creates ~/.sanctum/ with:
 //! - config.toml (alias, tor, host settings)
-//! - keys/identity.key (Ed25519 private key)
+//! - keys/identity.key (Ed25519 private key, encrypted with a passphrase)
 //! - keys/identity.pub (Ed25519 public key)
 //! - keys/identity.fingerprint (human-readable)
-//! - data/ (empty, for persistent mode)
 
 use crate::config::Config;
+use crate::passphrase;
 use sanctum_infra::identity::IdentityAdapter;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use sanctum_infra::identity::{create_private_dir, write_private_file};
 
 pub async fn run(alias: Option<String>, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let home = Config::home_dir();
@@ -19,22 +18,21 @@ pub async fn run(alias: Option<String>, config: &Config) -> Result<(), Box<dyn s
         // Check if identity already exists
         let key_path = home.join("keys").join("identity.key");
         if key_path.exists() {
-            let id = IdentityAdapter::load_from_disk()?;
+            let fp = IdentityAdapter::public_fingerprint_in(&IdentityAdapter::default_dir())?;
             println!("[sanctum] profile already exists");
-            println!("[sanctum] fingerprint: {}", id.fingerprint().as_str());
+            println!("[sanctum] fingerprint: {}", fp.as_str());
             println!("[sanctum] to reinitialize, delete ~/.sanctum/ first");
             return Ok(());
         }
     }
 
-    // Create directory structure
-    fs::create_dir_all(home.join("keys"))?;
-    fs::create_dir_all(home.join("data"))?;
-    fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
+    // Directories are created with mode 0700 from the start.
+    create_private_dir(&home)?;
 
-    // Generate Ed25519 identity
+    // Generate the Ed25519 identity, encrypted with a passphrase.
+    let pass = passphrase::read_new()?;
     let identity = IdentityAdapter::generate();
-    identity.save_to_disk()?;
+    identity.save_to_disk(pass.as_bytes())?;
 
     // Write config
     let alias = alias.unwrap_or_else(|| config.identity.alias.clone());
@@ -59,14 +57,14 @@ backlog_display = 50
         listen_port = config.host.listen_port,
     );
 
-    let config_path = home.join("config.toml");
-    fs::write(&config_path, config_content)?;
-    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+    write_private_file(&home.join("config.toml"), config_content.as_bytes())?;
 
     println!("[sanctum] profile initialized at {}", home.display());
     println!("[sanctum] alias: {alias}");
     println!("[sanctum] fingerprint: {}", identity.fingerprint().as_str());
-    println!("[sanctum] Ed25519 keypair saved to ~/.sanctum/keys/");
+    println!(
+        "[sanctum] Ed25519 key saved encrypted (Argon2id + ChaCha20-Poly1305) in ~/.sanctum/keys/"
+    );
     println!();
     println!("[sanctum] next: host a room with `sanctum host create <name> --chat --local`");
 

@@ -18,6 +18,8 @@ pub enum IdentityAction {
     },
     /// Show the current identity (fingerprint).
     Show,
+    /// Encrypt an identity key created by an older, unencrypted version.
+    Protect,
 }
 
 /// Why `identity import` is refused.
@@ -37,9 +39,20 @@ pub async fn run(
     match action {
         IdentityAction::Import { .. } => Err(IMPORT_DISABLED.into()),
         IdentityAction::Show => {
-            let identity = IdentityAdapter::load_from_disk()?;
-            println!("[sanctum] fingerprint: {}", identity.fingerprint().as_str());
+            let fp = IdentityAdapter::public_fingerprint_in(&IdentityAdapter::default_dir())?;
+            println!("[sanctum] fingerprint: {}", fp.as_str());
             println!("[sanctum] alias: {}", config.identity.alias);
+            Ok(())
+        }
+        IdentityAction::Protect => {
+            let dir = IdentityAdapter::default_dir();
+            let identity = IdentityAdapter::load_legacy_from(&dir)?;
+            let pass = crate::passphrase::read_new()?;
+            identity.save_to(&dir, pass.as_bytes())?;
+            println!(
+                "[sanctum] identity {} is now encrypted with your passphrase",
+                identity.fingerprint().short()
+            );
             Ok(())
         }
     }

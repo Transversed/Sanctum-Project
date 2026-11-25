@@ -99,7 +99,7 @@ async fn run_create(
     let room_mode = parse_mode(&mode)?;
 
     // Load real identity
-    let identity = IdentityAdapter::load_from_disk()
+    let identity = IdentityAdapter::load_from_disk(crate::passphrase::read_existing()?.as_bytes())
         .map_err(|e| format!("{e}\nRun `sanctum init --alias <name>` first."))?;
     let identity = Arc::new(identity);
     let owner_fp = identity.fingerprint().clone();

@@ -64,11 +64,21 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Passphrase prompt without echo
+rpassword = "7"
+
 # Dev
 tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Argon2id is deliberately expensive; optimize it even in debug/test builds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 opt-level = 3
