@@ -33,6 +33,9 @@ pub enum RoomAction {
         /// Token validity in hours.
         #[arg(long, default_value = "24")]
         ttl_hours: u64,
+        /// Host Noise public key, as printed by `sanctum host create`.
+        #[arg(long)]
+        host_key: String,
     },
     Revoke {
         room_id: String,
@@ -60,6 +63,7 @@ pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std:
             room_id,
             role,
             ttl_hours,
+            host_key,
         } => run_invite(
             &fingerprint,
             &room_onion,
@@ -67,6 +71,7 @@ pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std:
             &room_id,
             &role,
             ttl_hours,
+            &host_key,
             config,
         ),
         RoomAction::Revoke {
@@ -82,6 +87,7 @@ pub async fn run(action: RoomAction, config: &Config) -> Result<(), Box<dyn std:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_invite(
     fingerprint: &str,
     room_onion: &str,
@@ -89,6 +95,7 @@ fn run_invite(
     room_id: &str,
     role: &str,
     ttl_hours: u64,
+    host_key: &str,
     _config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load our identity (inviter)
@@ -108,13 +115,8 @@ fn run_invite(
         .parse::<RoomId>()
         .map_err(|e| format!("invalid room ID: {e}"))?;
 
-    // Read host Noise public key
-    let noise_pub = std::fs::read("/tmp/sanctum_noise_pub")
-        .or_else(|_| std::fs::read("/tmp/sanctum_demo_noise_pub"))
-        .unwrap_or_else(|_| {
-            eprintln!("[sanctum] warning: could not read host Noise key, using empty");
-            vec![0u8; 32]
-        });
+    // Host Noise public key: explicit, validated, never a silent fallback.
+    let noise_pub = invite_codec::decode_host_key(host_key)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

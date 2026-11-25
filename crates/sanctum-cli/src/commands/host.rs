@@ -12,6 +12,7 @@ use sanctum_infra::client_connector;
 use sanctum_infra::e2e_session::PeerPrivateKeys;
 use sanctum_infra::host_listener::HostListener;
 use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::invite_codec;
 use sanctum_infra::tor_control::{TorConfig as InfraTorConfig, TorController};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -116,7 +117,6 @@ async fn run_create(
 
     // Noise keypair
     let (noise_priv, noise_pub): (Vec<u8>, Vec<u8>) = sanctum_infra::noise_keygen();
-    let _ = std::fs::write("/tmp/sanctum_noise_pub", &noise_pub);
 
     // E2E keys
     let e2e_keys = PeerPrivateKeys::generate(5);
@@ -187,12 +187,13 @@ async fn run_create(
     println!("[sanctum] your fingerprint (share with invitees):");
     println!("  {}", owner_fp.as_str());
     println!();
-    println!("[sanctum] to invite someone:");
+    println!("[sanctum] to invite someone (run as the owner, in another terminal):");
     println!(
-        "  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {}",
+        "  sanctum room invite <their_fingerprint> --room-onion {} --room-port {} --room-id {} --host-key {}",
         onion_display,
         hs.port,
-        room.id().as_str()
+        room.id().as_str(),
+        invite_codec::encode_host_key(&noise_pub),
     );
     println!();
 

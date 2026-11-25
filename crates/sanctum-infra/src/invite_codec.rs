@@ -40,6 +40,34 @@ pub fn decode_invite(encoded: &str) -> Result<InviteToken, SanctumError> {
     Ok(token)
 }
 
+/// Length of a Noise static public key (X25519).
+pub const HOST_KEY_LEN: usize = 32;
+
+/// Encode the host's Noise static public key for out-of-band sharing.
+pub fn encode_host_key(key: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(key)
+}
+
+/// Decode a host Noise public key; rejects anything that is not 32 bytes
+/// or is all zeros (never a valid X25519 public key for our handshake).
+pub fn decode_host_key(encoded: &str) -> Result<Vec<u8>, SanctumError> {
+    let key = URL_SAFE_NO_PAD
+        .decode(encoded.trim())
+        .map_err(|e| SanctumError::InvalidInviteToken(format!("host key base64: {e}")))?;
+    if key.len() != HOST_KEY_LEN {
+        return Err(SanctumError::InvalidInviteToken(format!(
+            "host key must be {HOST_KEY_LEN} bytes, got {}",
+            key.len()
+        )));
+    }
+    if key.iter().all(|b| *b == 0) {
+        return Err(SanctumError::InvalidInviteToken(
+            "host key is all zeros".into(),
+        ));
+    }
+    Ok(key)
+}
+
 /// Validate a decoded invite token (check expiry and fingerprint).
 pub fn validate_invite(
     token: &InviteToken,
@@ -88,6 +116,16 @@ mod tests {
             expires_at: now + 3600,
             signature: vec![],
         }
+    }
+
+    #[test]
+    fn host_key_round_trip_and_rejections() {
+        let key = [7u8; 32];
+        let enc = encode_host_key(&key);
+        assert_eq!(decode_host_key(&enc).unwrap(), key.to_vec());
+        assert!(decode_host_key(&encode_host_key(&[0u8; 32])).is_err());
+        assert!(decode_host_key(&encode_host_key(&[1u8; 31])).is_err());
+        assert!(decode_host_key("not base64 !").is_err());
     }
 
     #[test]
