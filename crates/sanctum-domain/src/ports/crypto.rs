@@ -23,7 +23,7 @@ pub trait CryptoPort: Send + Sync {
     ) -> Result<Vec<u8>, SanctumError>;
 
     /// Pad plaintext to block_size multiples.
-    fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8>;
+    fn pad(&self, plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError>;
 
     /// Remove padding.
     fn unpad(&self, padded: &[u8]) -> Result<Vec<u8>, SanctumError>;

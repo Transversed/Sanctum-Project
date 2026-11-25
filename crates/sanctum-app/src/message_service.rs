@@ -108,7 +108,11 @@ impl MessageService {
     }
 
     /// Pad a plaintext message before encryption.
-    pub fn pad_message(&self, plaintext: &[u8], crypto: &impl CryptoPort) -> Vec<u8> {
+    pub fn pad_message(
+        &self,
+        plaintext: &[u8],
+        crypto: &impl CryptoPort,
+    ) -> Result<Vec<u8>, SanctumError> {
         crypto.pad(plaintext, self.padding_block_size)
     }
 
@@ -163,7 +167,7 @@ mod tests {
         ) -> Result<Vec<u8>, SanctumError> {
             Ok(ciphertext.to_vec())
         }
-        fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
+        fn pad(&self, plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError> {
             let real_len = plaintext.len() as u32;
             let needed = 4 + plaintext.len();
             let padded_len = needed.div_ceil(block_size) * block_size;
@@ -171,7 +175,7 @@ mod tests {
             out.extend_from_slice(&real_len.to_be_bytes());
             out.extend_from_slice(plaintext);
             out.resize(padded_len, 0);
-            out
+            Ok(out)
         }
         fn unpad(&self, padded: &[u8]) -> Result<Vec<u8>, SanctumError> {
             if padded.len() < 4 {
@@ -248,7 +252,7 @@ mod tests {
         let crypto = MockCrypto;
 
         let msg = b"Hello Sanctum";
-        let padded = svc.pad_message(msg, &crypto);
+        let padded = svc.pad_message(msg, &crypto).unwrap();
         assert_eq!(padded.len() % 256, 0);
 
         let recovered = svc.unpad_message(&padded, &crypto).unwrap();

@@ -1,21 +1,41 @@
-//! Double Ratchet protocol for per-message forward secrecy.
+//! Double Ratchet (Signal specification, revision 4), protocol v2 profile.
 //!
-//! After X3DH establishes a shared secret, the Double Ratchet derives
-//! a unique key for each message. Even if a message key is compromised,
-//! past and future messages remain secure.
+//! - `KDF_RK(rk, dh) = HKDF-SHA256(salt = rk, ikm = dh, info = "SANCTUM-DR-RK-v2")`
+//!   → 64 bytes = (new root key, chain key)
+//! - `KDF_CK(ck)`: message key = HMAC-SHA256(ck, 0x01), next chain key =
+//!   HMAC-SHA256(ck, 0x02)
+//! - message key → HKDF-SHA256(salt = 0³², ikm = mk, info = "SANCTUM-DR-MSG-v2")
+//!   → 44 bytes = ChaCha20-Poly1305 key (32) ‖ nonce (12)
+//! - associated data = `ad_prefix ‖ encode(header)` where
+//!   `ad_prefix = "SANCTUM-DR-v2" ‖ IK_initiator ‖ IK_responder` and
+//!   `encode(header) = dh_public ‖ pn (u32 BE) ‖ n (u32 BE)`: tampering with
+//!   any header field makes decryption fail.
+//!
+//! Decryption is transactional: it runs on a copy of the state, which only
+//! replaces the current state after the AEAD tag verified. A forged message
+//! can therefore not desynchronize a session.
 
+use hmac::{Hmac, Mac};
 use sanctum_domain::SanctumError;
-use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use std::collections::{HashMap, VecDeque};
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::aead::{self, AeadCipher};
 use crate::kdf;
 
-const MAX_SKIP: u32 = 256;
+/// Maximum number of message keys skipped within one receiving chain.
+pub const MAX_SKIP: u32 = 256;
+/// Maximum number of skipped message keys kept across all chains (FIFO).
+pub const MAX_SKIPPED_TOTAL: usize = 1000;
+/// Domain separator of the associated data.
+pub const AD_DOMAIN: &[u8] = b"SANCTUM-DR-v2";
+const RK_INFO: &[u8] = b"SANCTUM-DR-RK-v2";
+const MSG_INFO: &[u8] = b"SANCTUM-DR-MSG-v2";
 
 /// The ratchet header sent with each message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     /// Sender's current ratchet public key.
     pub dh_public: [u8; 32],
@@ -25,132 +45,194 @@ pub struct Header {
     pub msg_num: u32,
 }
 
-/// Ratchet state for one peer. Mutable, maintained per-session.
-#[derive(Serialize, Deserialize)]
-pub struct RatchetState {
-    // DH ratchet
-    dh_self_secret: Vec<u8>,     // our current ratchet private key
-    dh_self_public: [u8; 32],    // our current ratchet public key
-    dh_remote: Option<[u8; 32]>, // their current ratchet public key
-
-    // Root key (evolves at each DH ratchet step)
-    root_key: [u8; 32],
-
-    // Sending chain
-    chain_key_send: Option<[u8; 32]>,
-    msg_num_send: u32,
-
-    // Receiving chain
-    chain_key_recv: Option<[u8; 32]>,
-    msg_num_recv: u32,
-    prev_chain_len: u32,
-
-    // Skipped message keys (for out-of-order delivery)
-    #[serde(skip)]
-    skipped_keys: std::collections::HashMap<([u8; 32], u32), [u8; 32]>,
-}
-
-impl Drop for RatchetState {
-    fn drop(&mut self) {
-        self.dh_self_secret.zeroize();
-        self.root_key.zeroize();
-        if let Some(ref mut ck) = self.chain_key_send {
-            ck.zeroize();
-        }
-        if let Some(ref mut ck) = self.chain_key_recv {
-            ck.zeroize();
-        }
-        for key in self.skipped_keys.values_mut() {
-            key.zeroize();
-        }
+impl Header {
+    /// Canonical encoding, authenticated as associated data.
+    pub fn encode(&self) -> [u8; 40] {
+        let mut out = [0u8; 40];
+        out[..32].copy_from_slice(&self.dh_public);
+        out[32..36].copy_from_slice(&self.prev_chain_len.to_be_bytes());
+        out[36..].copy_from_slice(&self.msg_num.to_be_bytes());
+        out
     }
 }
 
-/// Generate a new ratchet keypair.
-fn generate_ratchet_keypair() -> (Vec<u8>, [u8; 32]) {
-    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let public = PublicKey::from(&secret);
-    (secret.to_bytes().to_vec(), public.to_bytes())
+/// Associated-data prefix binding a session to both identity keys.
+pub fn ad_prefix(initiator_ik: &[u8; 32], responder_ik: &[u8; 32]) -> Vec<u8> {
+    let mut ad = Vec::with_capacity(AD_DOMAIN.len() + 64);
+    ad.extend_from_slice(AD_DOMAIN);
+    ad.extend_from_slice(initiator_ik);
+    ad.extend_from_slice(responder_ik);
+    ad
 }
 
-/// Perform a DH operation and return the shared secret.
-fn dh(our_secret: &[u8], their_public: &[u8; 32]) -> [u8; 32] {
-    let mut secret_bytes = [0u8; 32];
-    secret_bytes.copy_from_slice(our_secret);
-    let secret = StaticSecret::from(secret_bytes);
-    let public = PublicKey::from(*their_public);
-    let shared = secret.diffie_hellman(&public);
-    secret_bytes.zeroize();
-    *shared.as_bytes()
+/// Ratchet state for one peer (RAM only, wiped on drop).
+#[derive(Clone)]
+pub struct RatchetState {
+    dh_self_secret: Zeroizing<[u8; 32]>,
+    dh_self_public: [u8; 32],
+    dh_remote: Option<[u8; 32]>,
+    root_key: Zeroizing<[u8; 32]>,
+    chain_key_send: Option<Zeroizing<[u8; 32]>>,
+    chain_key_recv: Option<Zeroizing<[u8; 32]>>,
+    msg_num_send: u32,
+    msg_num_recv: u32,
+    prev_chain_len: u32,
+    ad_prefix: Vec<u8>,
+    /// (ratchet public key, message number) → message key.
+    skipped_keys: HashMap<([u8; 32], u32), Zeroizing<[u8; 32]>>,
+    /// Insertion order of `skipped_keys`, for FIFO eviction.
+    skipped_order: VecDeque<([u8; 32], u32)>,
+    /// Deterministic ratchet keys for known-answer tests.
+    #[cfg(test)]
+    pub(crate) test_keys: VecDeque<[u8; 32]>,
 }
 
-/// KDF for the root chain: root_key + dh_output → (new_root_key, chain_key).
-fn kdf_rk(root_key: &[u8; 32], dh_output: &[u8; 32]) -> Result<([u8; 32], [u8; 32]), SanctumError> {
-    let derived = kdf::derive_subkey(root_key, dh_output, b"ratchet_root", 64)?;
-    let mut new_root = [0u8; 32];
-    let mut chain_key = [0u8; 32];
-    new_root.copy_from_slice(&derived[..32]);
-    chain_key.copy_from_slice(&derived[32..64]);
-    Ok((new_root, chain_key))
+fn dh(our_secret: &[u8; 32], their_public: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let secret = StaticSecret::from(*our_secret);
+    let shared = secret.diffie_hellman(&PublicKey::from(*their_public));
+    Zeroizing::new(*shared.as_bytes())
 }
 
-/// KDF for the message chain: chain_key → (new_chain_key, message_key).
-fn kdf_ck(chain_key: &[u8; 32]) -> Result<([u8; 32], [u8; 32]), SanctumError> {
-    let new_ck = kdf::derive_subkey(chain_key, b"", b"chain_next", 32)?;
-    let mk = kdf::derive_subkey(chain_key, b"", b"message_key", 32)?;
-    let mut new_chain = [0u8; 32];
-    let mut msg_key = [0u8; 32];
-    new_chain.copy_from_slice(&new_ck);
-    msg_key.copy_from_slice(&mk);
-    Ok((new_chain, msg_key))
+fn public_of(secret: &[u8; 32]) -> [u8; 32] {
+    PublicKey::from(&StaticSecret::from(*secret)).to_bytes()
+}
+
+type Key = Zeroizing<[u8; 32]>;
+
+/// `KDF_RK`: HKDF(salt = root key, ikm = DH output) → (root key, chain key).
+pub fn kdf_rk(root_key: &[u8; 32], dh_output: &[u8; 32]) -> Result<(Key, Key), SanctumError> {
+    let derived = Zeroizing::new(kdf::derive_subkey(dh_output, root_key, RK_INFO, 64)?);
+    let mut rk = Zeroizing::new([0u8; 32]);
+    let mut ck = Zeroizing::new([0u8; 32]);
+    rk.copy_from_slice(&derived[..32]);
+    ck.copy_from_slice(&derived[32..]);
+    Ok((rk, ck))
+}
+
+fn hmac_byte(key: &[u8; 32], byte: u8) -> Key {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(&[byte]);
+    Zeroizing::new(mac.finalize().into_bytes().into())
+}
+
+/// `KDF_CK`: (next chain key, message key) = (HMAC(ck, 0x02), HMAC(ck, 0x01)).
+pub fn kdf_ck(chain_key: &[u8; 32]) -> (Key, Key) {
+    (hmac_byte(chain_key, 0x02), hmac_byte(chain_key, 0x01))
+}
+
+/// Message key → (AEAD key, nonce).
+fn message_keys(mk: &[u8; 32]) -> Result<(Key, [u8; 12]), SanctumError> {
+    let derived = Zeroizing::new(kdf::derive_subkey(mk, &[0u8; 32], MSG_INFO, 44)?);
+    let mut key = Zeroizing::new([0u8; 32]);
+    let mut nonce = [0u8; 12];
+    key.copy_from_slice(&derived[..32]);
+    nonce.copy_from_slice(&derived[32..]);
+    Ok((key, nonce))
+}
+
+fn overflow() -> SanctumError {
+    SanctumError::MalformedMessage("ratchet counter overflow".into())
 }
 
 impl RatchetState {
-    /// Initialize as the party that sent the first message (Alice after X3DH).
-    ///
-    /// Alice knows Bob's ratchet public key (from his SPK).
-    pub fn init_alice(
-        shared_secret: [u8; 32],
-        bob_ratchet_pub: [u8; 32],
-    ) -> Result<Self, SanctumError> {
-        let (dh_secret, dh_public) = generate_ratchet_keypair();
-        let dh_output = dh(&dh_secret, &bob_ratchet_pub);
-        let (root_key, chain_key_send) = kdf_rk(&shared_secret, &dh_output)?;
-
-        Ok(Self {
-            dh_self_secret: dh_secret,
-            dh_self_public: dh_public,
-            dh_remote: Some(bob_ratchet_pub),
-            root_key,
-            chain_key_send: Some(chain_key_send),
-            msg_num_send: 0,
-            chain_key_recv: None,
-            msg_num_recv: 0,
-            prev_chain_len: 0,
-            skipped_keys: std::collections::HashMap::new(),
-        })
+    fn new_keypair(&mut self) -> (Key, [u8; 32]) {
+        #[cfg(test)]
+        if let Some(secret) = self.test_keys.pop_front() {
+            return (Zeroizing::new(secret), public_of(&secret));
+        }
+        let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let bytes = Zeroizing::new(secret.to_bytes());
+        let public = PublicKey::from(&secret).to_bytes();
+        (bytes, public)
     }
 
-    /// Initialize as the party that receives the first message (Bob after X3DH).
-    ///
-    /// Bob uses his SPK secret as the initial ratchet key.
-    pub fn init_bob(
-        shared_secret: [u8; 32],
-        bob_spk_secret: Vec<u8>,
-        bob_spk_public: [u8; 32],
-    ) -> Self {
+    fn empty(ad_prefix: Vec<u8>, dh_self_secret: Key, root_key: Key) -> Self {
+        let dh_self_public = public_of(&dh_self_secret);
         Self {
-            dh_self_secret: bob_spk_secret,
-            dh_self_public: bob_spk_public,
+            dh_self_secret,
+            dh_self_public,
             dh_remote: None,
-            root_key: shared_secret,
+            root_key,
             chain_key_send: None,
-            msg_num_send: 0,
             chain_key_recv: None,
+            msg_num_send: 0,
             msg_num_recv: 0,
             prev_chain_len: 0,
-            skipped_keys: std::collections::HashMap::new(),
+            ad_prefix,
+            skipped_keys: HashMap::new(),
+            skipped_order: VecDeque::new(),
+            #[cfg(test)]
+            test_keys: VecDeque::new(),
         }
+    }
+
+    /// Initialize as the initiator (Alice) after X3DH.
+    pub fn init_alice(
+        shared_secret: &[u8; 32],
+        bob_ratchet_pub: [u8; 32],
+        ad_prefix: Vec<u8>,
+    ) -> Result<Self, SanctumError> {
+        let mut state = Self::empty(
+            ad_prefix,
+            Zeroizing::new([0u8; 32]),
+            Zeroizing::new([0u8; 32]),
+        );
+        state.start_alice(shared_secret, bob_ratchet_pub)?;
+        Ok(state)
+    }
+
+    fn start_alice(
+        &mut self,
+        shared_secret: &[u8; 32],
+        bob_ratchet_pub: [u8; 32],
+    ) -> Result<(), SanctumError> {
+        let (secret, public) = self.new_keypair();
+        let (rk, cks) = kdf_rk(shared_secret, &dh(&secret, &bob_ratchet_pub))?;
+        self.dh_self_secret = secret;
+        self.dh_self_public = public;
+        self.dh_remote = Some(bob_ratchet_pub);
+        self.root_key = rk;
+        self.chain_key_send = Some(cks);
+        Ok(())
+    }
+
+    /// [`Self::init_alice`] with predetermined ratchet keys (KAT only).
+    #[cfg(test)]
+    pub(crate) fn init_alice_deterministic(
+        shared_secret: &[u8; 32],
+        bob_ratchet_pub: [u8; 32],
+        ad_prefix: Vec<u8>,
+        ratchet_keys: Vec<[u8; 32]>,
+    ) -> Result<Self, SanctumError> {
+        let mut state = Self::empty(
+            ad_prefix,
+            Zeroizing::new([0u8; 32]),
+            Zeroizing::new([0u8; 32]),
+        );
+        state.test_keys = ratchet_keys.into();
+        state.start_alice(shared_secret, bob_ratchet_pub)?;
+        Ok(state)
+    }
+
+    /// Initialize as the responder (Bob): his signed prekey is the first
+    /// ratchet key pair.
+    pub fn init_bob(
+        shared_secret: &[u8; 32],
+        bob_spk_secret: &[u8; 32],
+        ad_prefix: Vec<u8>,
+    ) -> Self {
+        Self::empty(
+            ad_prefix,
+            Zeroizing::new(*bob_spk_secret),
+            Zeroizing::new(*shared_secret),
+        )
+    }
+
+    fn associated_data(&self, header: &Header) -> Vec<u8> {
+        let mut ad = Vec::with_capacity(self.ad_prefix.len() + 40);
+        ad.extend_from_slice(&self.ad_prefix);
+        ad.extend_from_slice(&header.encode());
+        ad
     }
 
     /// Encrypt a plaintext message. Returns (header, ciphertext).
@@ -159,133 +241,137 @@ impl RatchetState {
             .chain_key_send
             .as_ref()
             .ok_or_else(|| SanctumError::MalformedMessage("no send chain".into()))?;
-
-        let (new_ck, msg_key) = kdf_ck(ck)?;
-        self.chain_key_send = Some(new_ck);
-
+        let (next_ck, mk) = kdf_ck(ck);
         let header = Header {
             dh_public: self.dh_self_public,
             prev_chain_len: self.prev_chain_len,
             msg_num: self.msg_num_send,
         };
-        self.msg_num_send += 1;
-
-        // Derive nonce from message key
-        let nonce_bytes = kdf::derive_subkey(&msg_key, b"", b"nonce", 12)?;
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&nonce_bytes);
-
+        let next_num = self.msg_num_send.checked_add(1).ok_or_else(overflow)?;
+        let (key, nonce) = message_keys(&mk)?;
         let ct = aead::encrypt(
             AeadCipher::ChaCha20Poly1305,
-            &msg_key,
+            key.as_ref(),
             &nonce,
             plaintext,
-            b"",
+            &self.associated_data(&header),
         )?;
-
+        self.chain_key_send = Some(next_ck);
+        self.msg_num_send = next_num;
         Ok((header, ct))
     }
 
-    /// Decrypt a received message.
+    /// Decrypt a received message (transactional, see module docs).
     pub fn decrypt(&mut self, header: &Header, ciphertext: &[u8]) -> Result<Vec<u8>, SanctumError> {
-        // Try skipped keys first (out-of-order message)
-        if let Some(mk) = self
-            .skipped_keys
-            .remove(&(header.dh_public, header.msg_num))
-        {
-            let nonce_bytes = kdf::derive_subkey(&mk, b"", b"nonce", 12)?;
-            let mut nonce = [0u8; 12];
-            nonce.copy_from_slice(&nonce_bytes);
-            return aead::decrypt(AeadCipher::ChaCha20Poly1305, &mk, &nonce, ciphertext, b"");
+        let mut next = self.clone();
+        let plaintext = next.decrypt_in_place(header, ciphertext)?;
+        *self = next;
+        Ok(plaintext)
+    }
+
+    fn decrypt_in_place(
+        &mut self,
+        header: &Header,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SanctumError> {
+        let ad = self.associated_data(header);
+        let id = (header.dh_public, header.msg_num);
+        if let Some(mk) = self.skipped_keys.get(&id) {
+            let (key, nonce) = message_keys(mk)?;
+            let pt = aead::decrypt(
+                AeadCipher::ChaCha20Poly1305,
+                key.as_ref(),
+                &nonce,
+                ciphertext,
+                &ad,
+            )?;
+            self.skipped_keys.remove(&id);
+            self.skipped_order.retain(|k| *k != id);
+            return Ok(pt);
         }
 
-        // Check if we need a DH ratchet step (new ratchet key from sender)
-        let need_ratchet = self.dh_remote != Some(header.dh_public);
-
-        if need_ratchet {
+        if self.dh_remote != Some(header.dh_public) {
             self.skip_messages(header.prev_chain_len)?;
             self.dh_ratchet(&header.dh_public)?;
         }
-
         self.skip_messages(header.msg_num)?;
 
         let ck = self
             .chain_key_recv
             .as_ref()
             .ok_or_else(|| SanctumError::MalformedMessage("no recv chain".into()))?;
-
-        let (new_ck, msg_key) = kdf_ck(ck)?;
-        self.chain_key_recv = Some(new_ck);
-        self.msg_num_recv += 1;
-
-        let nonce_bytes = kdf::derive_subkey(&msg_key, b"", b"nonce", 12)?;
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&nonce_bytes);
-
+        let (next_ck, mk) = kdf_ck(ck);
+        self.chain_key_recv = Some(next_ck);
+        self.msg_num_recv = self.msg_num_recv.checked_add(1).ok_or_else(overflow)?;
+        let (key, nonce) = message_keys(&mk)?;
         aead::decrypt(
             AeadCipher::ChaCha20Poly1305,
-            &msg_key,
+            key.as_ref(),
             &nonce,
             ciphertext,
-            b"",
+            &ad,
         )
     }
 
-    /// Perform a DH ratchet step with a new remote public key.
-    fn dh_ratchet(&mut self, new_remote_pub: &[u8; 32]) -> Result<(), SanctumError> {
+    fn dh_ratchet(&mut self, remote: &[u8; 32]) -> Result<(), SanctumError> {
         self.prev_chain_len = self.msg_num_send;
         self.msg_num_send = 0;
         self.msg_num_recv = 0;
-        self.dh_remote = Some(*new_remote_pub);
+        self.dh_remote = Some(*remote);
 
-        // Receiving chain
-        let dh_recv = dh(&self.dh_self_secret, new_remote_pub);
-        let (rk, ck_recv) = kdf_rk(&self.root_key, &dh_recv)?;
+        let (rk, ckr) = kdf_rk(&self.root_key, &dh(&self.dh_self_secret, remote))?;
         self.root_key = rk;
-        self.chain_key_recv = Some(ck_recv);
+        self.chain_key_recv = Some(ckr);
 
-        // Generate new keypair for sending
-        let (new_secret, new_public) = generate_ratchet_keypair();
-        self.dh_self_secret.zeroize();
-        self.dh_self_secret = new_secret;
-        self.dh_self_public = new_public;
-
-        // Sending chain
-        let dh_send = dh(&self.dh_self_secret, new_remote_pub);
-        let (rk, ck_send) = kdf_rk(&self.root_key, &dh_send)?;
+        let (secret, public) = self.new_keypair();
+        self.dh_self_secret = secret;
+        self.dh_self_public = public;
+        let (rk, cks) = kdf_rk(&self.root_key, &dh(&self.dh_self_secret, remote))?;
         self.root_key = rk;
-        self.chain_key_send = Some(ck_send);
-
+        self.chain_key_send = Some(cks);
         Ok(())
     }
 
-    /// Store skipped message keys for out-of-order delivery.
     fn skip_messages(&mut self, until: u32) -> Result<(), SanctumError> {
-        let ck = match self.chain_key_recv.as_ref() {
-            Some(ck) => ck,
-            None => return Ok(()),
+        let (Some(ck), Some(remote)) = (self.chain_key_recv.clone(), self.dh_remote) else {
+            return Ok(());
         };
-
-        if self.msg_num_recv + MAX_SKIP < until {
+        if until.saturating_sub(self.msg_num_recv) > MAX_SKIP {
             return Err(SanctumError::MalformedMessage(
                 "too many skipped messages".into(),
             ));
         }
-
-        let remote = match self.dh_remote {
-            Some(r) => r,
-            None => return Ok(()),
-        };
-
-        let mut current_ck = *ck;
+        let mut ck = ck;
         while self.msg_num_recv < until {
-            let (new_ck, mk) = kdf_ck(&current_ck)?;
-            self.skipped_keys.insert((remote, self.msg_num_recv), mk);
-            current_ck = new_ck;
+            let (next_ck, mk) = kdf_ck(&ck);
+            let id = (remote, self.msg_num_recv);
+            self.skipped_keys.insert(id, mk);
+            self.skipped_order.push_back(id);
+            while self.skipped_order.len() > MAX_SKIPPED_TOTAL {
+                if let Some(old) = self.skipped_order.pop_front() {
+                    // Zeroizing wipes the evicted key on drop.
+                    self.skipped_keys.remove(&old);
+                }
+            }
+            ck = next_ck;
             self.msg_num_recv += 1;
         }
-        self.chain_key_recv = Some(current_ck);
+        self.chain_key_recv = Some(ck);
         Ok(())
+    }
+
+    /// Number of skipped message keys currently held.
+    pub fn skipped_key_count(&self) -> usize {
+        self.skipped_keys.len()
+    }
+}
+
+impl Drop for RatchetState {
+    fn drop(&mut self) {
+        // Every key field is Zeroizing; also wipe the remaining public state.
+        self.dh_self_public.zeroize();
+        self.dh_remote.zeroize();
+        self.ad_prefix.zeroize();
     }
 }
 
@@ -298,109 +384,152 @@ mod tests {
         let alice_ik = X25519Keypair::generate();
         let bob_ik = X25519Keypair::generate();
         let bob_spk = X25519Keypair::generate();
-
-        let alice_x3dh = x3dh::initiate(
+        let init = x3dh::initiate(
             &alice_ik,
             &bob_ik.public.to_bytes(),
             &bob_spk.public.to_bytes(),
             None,
         )
         .unwrap();
-
-        let bob_x3dh = x3dh::respond(
+        let resp = x3dh::respond(
             &bob_ik,
             &bob_spk,
             None,
             &alice_ik.public.to_bytes(),
-            &alice_x3dh.ephemeral_public,
+            &init.ephemeral_public,
         )
         .unwrap();
-
-        assert_eq!(alice_x3dh.shared_secret, bob_x3dh.shared_secret);
-
-        let alice_ratchet =
-            RatchetState::init_alice(alice_x3dh.shared_secret, bob_spk.public.to_bytes()).unwrap();
-
-        let bob_ratchet = RatchetState::init_bob(
-            bob_x3dh.shared_secret,
-            bob_spk.secret.to_bytes().to_vec(),
-            bob_spk.public.to_bytes(),
-        );
-
-        (alice_ratchet, bob_ratchet)
+        assert_eq!(*init.shared_secret, *resp.shared_secret);
+        let ad = ad_prefix(&alice_ik.public.to_bytes(), &bob_ik.public.to_bytes());
+        let alice =
+            RatchetState::init_alice(&init.shared_secret, bob_spk.public.to_bytes(), ad.clone())
+                .unwrap();
+        let bob = RatchetState::init_bob(&resp.shared_secret, &bob_spk.secret.to_bytes(), ad);
+        (alice, bob)
     }
 
     #[test]
-    fn ratchet_round_trip() {
+    fn ratchet_round_trip_and_bidirectional() {
         let (mut alice, mut bob) = setup_ratchet_pair();
-
-        // Alice → Bob
-        let (header, ct) = alice.encrypt(b"Hello Bob").unwrap();
-        let pt = bob.decrypt(&header, &ct).unwrap();
-        assert_eq!(pt, b"Hello Bob");
-    }
-
-    #[test]
-    fn ratchet_multiple_messages() {
-        let (mut alice, mut bob) = setup_ratchet_pair();
-
+        let (h, ct) = alice.encrypt(b"hello bob").unwrap();
+        assert_eq!(bob.decrypt(&h, &ct).unwrap(), b"hello bob");
+        let (h, ct) = bob.encrypt(b"hello alice").unwrap();
+        assert_eq!(alice.decrypt(&h, &ct).unwrap(), b"hello alice");
         for i in 0..10 {
-            let msg = format!("Message {i}");
-            let (h, ct) = alice.encrypt(msg.as_bytes()).unwrap();
-            let pt = bob.decrypt(&h, &ct).unwrap();
-            assert_eq!(pt, msg.as_bytes());
+            let (h, ct) = alice.encrypt(format!("{i}").as_bytes()).unwrap();
+            assert_eq!(bob.decrypt(&h, &ct).unwrap(), format!("{i}").as_bytes());
         }
-    }
-
-    #[test]
-    fn ratchet_bidirectional() {
-        let (mut alice, mut bob) = setup_ratchet_pair();
-
-        // Alice → Bob
-        let (h, ct) = alice.encrypt(b"Hi Bob").unwrap();
-        let pt = bob.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"Hi Bob");
-
-        // Bob → Alice
-        let (h, ct) = bob.encrypt(b"Hi Alice").unwrap();
-        let pt = alice.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"Hi Alice");
-
-        // Alice → Bob again
-        let (h, ct) = alice.encrypt(b"How are you?").unwrap();
-        let pt = bob.decrypt(&h, &ct).unwrap();
-        assert_eq!(pt, b"How are you?");
     }
 
     #[test]
     fn ratchet_out_of_order() {
         let (mut alice, mut bob) = setup_ratchet_pair();
-
-        let (h1, ct1) = alice.encrypt(b"msg1").unwrap();
-        let (h2, ct2) = alice.encrypt(b"msg2").unwrap();
-        let (h3, ct3) = alice.encrypt(b"msg3").unwrap();
-
-        // Deliver out of order: 3, 1, 2
-        let pt3 = bob.decrypt(&h3, &ct3).unwrap();
-        assert_eq!(pt3, b"msg3");
-
-        let pt1 = bob.decrypt(&h1, &ct1).unwrap();
-        assert_eq!(pt1, b"msg1");
-
-        let pt2 = bob.decrypt(&h2, &ct2).unwrap();
-        assert_eq!(pt2, b"msg2");
+        let m: Vec<_> = (0..4).map(|i| alice.encrypt(&[i]).unwrap()).collect();
+        for i in [3usize, 0, 2, 1] {
+            assert_eq!(bob.decrypt(&m[i].0, &m[i].1).unwrap(), vec![i as u8]);
+        }
+        assert_eq!(bob.skipped_key_count(), 0);
     }
 
     #[test]
-    fn ratchet_forward_secrecy() {
+    fn message_key_is_single_use() {
         let (mut alice, mut bob) = setup_ratchet_pair();
-
-        // Send and receive a message (keys ratchet forward)
         let (h, ct) = alice.encrypt(b"secret").unwrap();
-        let _ = bob.decrypt(&h, &ct).unwrap();
+        bob.decrypt(&h, &ct).unwrap();
+        assert!(bob.decrypt(&h, &ct).is_err());
+    }
 
-        // The same ciphertext cannot be decrypted again (key was consumed)
-        let result = bob.decrypt(&h, &ct);
-        assert!(result.is_err());
+    // P4.1: the header is authenticated.
+    #[test]
+    fn tampered_header_fields_fail_decryption() {
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        let (h, ct) = alice.encrypt(b"x").unwrap();
+        let (h2, ct2) = alice.encrypt(b"y").unwrap();
+        let mut bad_n = h2;
+        bad_n.msg_num = 0;
+        assert!(bob.decrypt(&bad_n, &ct2).is_err(), "msg_num swap must fail");
+        let mut bad_pn = h;
+        bad_pn.prev_chain_len = 7;
+        assert!(bob.decrypt(&bad_pn, &ct).is_err(), "pn change must fail");
+        assert_eq!(bob.decrypt(&h, &ct).unwrap(), b"x");
+        assert_eq!(bob.decrypt(&h2, &ct2).unwrap(), b"y");
+    }
+
+    #[test]
+    fn session_is_bound_to_both_identities() {
+        let (mut alice, bob) = setup_ratchet_pair();
+        let mut other = bob.clone();
+        other.ad_prefix = ad_prefix(&[1u8; 32], &[2u8; 32]);
+        let (h, ct) = alice.encrypt(b"x").unwrap();
+        assert!(other.decrypt(&h, &ct).is_err());
+    }
+
+    // P4.2: a forged message cannot desynchronize the session.
+    #[test]
+    fn forged_message_with_new_ratchet_key_leaves_state_intact() {
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        let (h0, ct0) = alice.encrypt(b"first").unwrap();
+        bob.decrypt(&h0, &ct0).unwrap();
+
+        let forged = Header {
+            dh_public: X25519Keypair::generate().public.to_bytes(),
+            prev_chain_len: 50,
+            msg_num: 100,
+        };
+        assert!(bob.decrypt(&forged, &[0u8; 48]).is_err());
+        assert_eq!(bob.skipped_key_count(), 0, "no keys derived for a forgery");
+
+        let (h1, ct1) = alice.encrypt(b"second").unwrap();
+        assert_eq!(bob.decrypt(&h1, &ct1).unwrap(), b"second");
+    }
+
+    #[test]
+    fn failed_decryption_keeps_skipped_key() {
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        let (h0, ct0) = alice.encrypt(b"zero").unwrap();
+        let (h1, ct1) = alice.encrypt(b"one").unwrap();
+        bob.decrypt(&h1, &ct1).unwrap(); // skips 0
+        assert!(bob.decrypt(&h0, b"garbage-garbage-garbage").is_err());
+        assert_eq!(bob.decrypt(&h0, &ct0).unwrap(), b"zero");
+    }
+
+    // P4.3: memory is bounded across ratchet steps.
+    #[test]
+    fn skipped_keys_are_globally_bounded() {
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        for _ in 0..10 {
+            // Alice sends 256 messages, Bob only receives the last one.
+            let mut last = None;
+            for _ in 0..=MAX_SKIP {
+                last = Some(alice.encrypt(b"m").unwrap());
+            }
+            let (h, ct) = last.unwrap();
+            bob.decrypt(&h, &ct).unwrap();
+            // Bob answers so that Alice performs a DH ratchet step.
+            let (h, ct) = bob.encrypt(b"ack").unwrap();
+            alice.decrypt(&h, &ct).unwrap();
+            assert!(bob.skipped_key_count() <= MAX_SKIPPED_TOTAL);
+        }
+        assert_eq!(bob.skipped_key_count(), MAX_SKIPPED_TOTAL);
+    }
+
+    #[test]
+    fn too_many_skipped_in_one_chain_is_rejected() {
+        let (mut alice, mut bob) = setup_ratchet_pair();
+        let mut last = None;
+        for _ in 0..(MAX_SKIP + 2) {
+            last = Some(alice.encrypt(b"m").unwrap());
+        }
+        let (h, ct) = last.unwrap();
+        assert!(bob.decrypt(&h, &ct).is_err());
+    }
+
+    #[test]
+    fn kdf_ck_matches_signal_constants() {
+        let ck = [7u8; 32];
+        let (next, mk) = kdf_ck(&ck);
+        assert_eq!(*mk, *hmac_byte(&ck, 0x01));
+        assert_eq!(*next, *hmac_byte(&ck, 0x02));
+        assert_ne!(*mk, *next);
     }
 }

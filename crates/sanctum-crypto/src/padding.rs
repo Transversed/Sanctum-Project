@@ -12,24 +12,26 @@ use sanctum_domain::SanctumError;
 /// Format: `[real_len: 4 bytes BE][message][random padding]`
 ///
 /// Total output length is always a multiple of `block_size`.
-/// Minimum output = `block_size` bytes.
-pub fn pad(plaintext: &[u8], block_size: usize) -> Vec<u8> {
-    assert!(block_size >= 8, "block_size must be >= 8");
-    assert!(
-        block_size.is_power_of_two(),
-        "block_size must be a power of 2"
-    );
-
-    let real_len = plaintext.len() as u32;
+/// Minimum output = `block_size` bytes. Invalid parameters are errors,
+/// never panics (the release profile aborts on panic).
+pub fn pad(plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError> {
+    if block_size < 8 || !block_size.is_power_of_two() {
+        return Err(SanctumError::MalformedMessage(
+            "padding block size must be a power of two >= 8".into(),
+        ));
+    }
+    let real_len = u32::try_from(plaintext.len())
+        .ok()
+        .filter(|l| *l <= u32::MAX - 4)
+        .ok_or_else(|| SanctumError::MalformedMessage("message too large to pad".into()))?;
     let needed = 4 + plaintext.len(); // 4 bytes header + message
-    let padded_len = needed.div_ceil(block_size) * block_size;
+    let padded_len = needed
+        .div_ceil(block_size)
+        .checked_mul(block_size)
+        .ok_or_else(|| SanctumError::MalformedMessage("message too large to pad".into()))?;
 
     let mut output = Vec::with_capacity(padded_len);
-
-    // 4-byte big-endian length prefix
     output.extend_from_slice(&real_len.to_be_bytes());
-
-    // The actual message
     output.extend_from_slice(plaintext);
 
     // Random padding to fill the block
@@ -39,8 +41,7 @@ pub fn pad(plaintext: &[u8], block_size: usize) -> Vec<u8> {
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut padding);
         output.extend_from_slice(&padding);
     }
-
-    output
+    Ok(output)
 }
 
 /// Remove padding and extract the original message.
@@ -69,7 +70,7 @@ mod tests {
     #[test]
     fn round_trip() {
         let msg = b"Hello, Sanctum!";
-        let padded = pad(msg, 256);
+        let padded = pad(msg, 256).unwrap();
         let recovered = unpad(&padded).unwrap();
         assert_eq!(recovered, msg);
     }
@@ -78,22 +79,22 @@ mod tests {
     fn output_is_block_aligned() {
         for len in [0, 1, 10, 100, 251, 252, 253, 500, 1000] {
             let msg = vec![0x42u8; len];
-            let padded = pad(&msg, 256);
+            let padded = pad(&msg, 256).unwrap();
             assert_eq!(padded.len() % 256, 0, "failed for len={len}");
         }
     }
 
     #[test]
     fn minimum_output_is_one_block() {
-        let padded = pad(b"", 256);
+        let padded = pad(b"", 256).unwrap();
         assert_eq!(padded.len(), 256);
     }
 
     #[test]
     fn short_and_long_same_block() {
         // "ok" and a 200-char message should both pad to 256
-        let short = pad(b"ok", 256);
-        let long = pad(&[0x41u8; 200], 256);
+        let short = pad(b"ok", 256).unwrap();
+        let long = pad(&[0x41u8; 200], 256).unwrap();
         assert_eq!(short.len(), 256);
         assert_eq!(long.len(), 256);
     }
@@ -101,7 +102,7 @@ mod tests {
     #[test]
     fn large_message_multiple_blocks() {
         let msg = vec![0x41u8; 300];
-        let padded = pad(&msg, 256);
+        let padded = pad(&msg, 256).unwrap();
         assert_eq!(padded.len(), 512); // 4 + 300 = 304, rounds up to 512
     }
 
@@ -119,7 +120,7 @@ mod tests {
 
     #[test]
     fn empty_message_round_trip() {
-        let padded = pad(b"", 256);
+        let padded = pad(b"", 256).unwrap();
         let recovered = unpad(&padded).unwrap();
         assert!(recovered.is_empty());
     }
@@ -128,10 +129,18 @@ mod tests {
     fn different_block_sizes() {
         let msg = b"test";
         for bs in [64, 128, 256, 512, 1024] {
-            let padded = pad(msg, bs);
+            let padded = pad(msg, bs).unwrap();
             assert_eq!(padded.len() % bs, 0);
             let recovered = unpad(&padded).unwrap();
             assert_eq!(recovered, msg);
         }
+    }
+
+    #[test]
+    fn invalid_block_sizes_are_errors_not_panics() {
+        assert!(pad(b"x", 0).is_err());
+        assert!(pad(b"x", 4).is_err());
+        assert!(pad(b"x", 100).is_err());
+        assert!(pad(b"x", 256).is_ok());
     }
 }
