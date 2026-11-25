@@ -6,7 +6,7 @@
 
 use sanctum_domain::SanctumError;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::kdf;
 
@@ -36,27 +36,39 @@ impl X25519Keypair {
 
 /// Alice's output after initiating X3DH.
 pub struct X3dhInitResult {
-    /// Shared secret (32 bytes). Feed this into the Double Ratchet.
-    pub shared_secret: [u8; 32],
-    /// Alice's ephemeral public key (sent to Bob so he can derive the same secret).
+    /// Shared secret SK (wiped on drop). Feed it into the Double Ratchet.
+    pub shared_secret: Zeroizing<[u8; 32]>,
+    /// Alice's ephemeral public key (sent to Bob).
     pub ephemeral_public: [u8; 32],
 }
 
 /// Bob's output after responding to X3DH.
 pub struct X3dhRespondResult {
-    /// Shared secret (32 bytes). Same as Alice's if everything is correct.
-    pub shared_secret: [u8; 32],
+    /// Shared secret SK (wiped on drop).
+    pub shared_secret: Zeroizing<[u8; 32]>,
 }
 
-/// Alice initiates X3DH using Bob's PreKey Bundle.
+/// HKDF info string of the protocol v2 X3DH profile.
+pub const X3DH_INFO: &[u8] = b"SANCTUM-X3DH-v2";
+
+/// `SK = HKDF-SHA256(salt = 0³², ikm = F ‖ DH1 ‖ DH2 ‖ DH3 [‖ DH4], info)`
+/// with `F = 0xFF × 32` (X3DH specification, section 2.2, for X25519).
+fn derive_sk(dhs: &[&[u8; 32]]) -> Result<Zeroizing<[u8; 32]>, SanctumError> {
+    let mut ikm = Zeroizing::new(Vec::with_capacity(32 * 5));
+    ikm.extend_from_slice(&[0xFFu8; 32]);
+    for dh in dhs {
+        ikm.extend_from_slice(*dh);
+    }
+    let derived = Zeroizing::new(kdf::derive_subkey(&ikm, &[0u8; 32], X3DH_INFO, 32)?);
+    let mut sk = Zeroizing::new([0u8; 32]);
+    sk.copy_from_slice(&derived);
+    Ok(sk)
+}
+
+/// Alice initiates X3DH using Bob's prekey bundle (already verified).
 ///
-/// Performs 3 (or 4) DH operations:
-/// - DH1: Alice_IK × Bob_SPK
-/// - DH2: Alice_EK × Bob_IK
-/// - DH3: Alice_EK × Bob_SPK
-/// - DH4: Alice_EK × Bob_OPK (optional, if OPK is present)
-///
-/// Returns the shared secret and Alice's ephemeral public key.
+/// DH1 = DH(IK_A, SPK_B), DH2 = DH(EK_A, IK_B), DH3 = DH(EK_A, SPK_B),
+/// DH4 = DH(EK_A, OPK_B) when a one-time prekey is available.
 pub fn initiate(
     alice_identity: &X25519Keypair,
     bob_identity_pub: &[u8; 32],
@@ -64,46 +76,50 @@ pub fn initiate(
     bob_one_time_prekey_pub: Option<&[u8; 32]>,
 ) -> Result<X3dhInitResult, SanctumError> {
     let ephemeral = StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let ephemeral_public = PublicKey::from(&ephemeral);
+    initiate_with_ephemeral(
+        alice_identity,
+        bob_identity_pub,
+        bob_signed_prekey_pub,
+        bob_one_time_prekey_pub,
+        ephemeral,
+    )
+}
 
+/// [`initiate`] with a given ephemeral key (deterministic tests only).
+pub(crate) fn initiate_with_ephemeral(
+    alice_identity: &X25519Keypair,
+    bob_identity_pub: &[u8; 32],
+    bob_signed_prekey_pub: &[u8; 32],
+    bob_one_time_prekey_pub: Option<&[u8; 32]>,
+    ephemeral: StaticSecret,
+) -> Result<X3dhInitResult, SanctumError> {
+    let ephemeral_public = PublicKey::from(&ephemeral);
     let bob_ik = PublicKey::from(*bob_identity_pub);
     let bob_spk = PublicKey::from(*bob_signed_prekey_pub);
 
-    // DH1: Alice_IK × Bob_SPK
     let dh1 = alice_identity.secret.diffie_hellman(&bob_spk);
-    // DH2: Alice_EK × Bob_IK
     let dh2 = ephemeral.diffie_hellman(&bob_ik);
-    // DH3: Alice_EK × Bob_SPK
     let dh3 = ephemeral.diffie_hellman(&bob_spk);
-
-    let mut dh_concat = Vec::with_capacity(128);
-    dh_concat.extend_from_slice(dh1.as_bytes());
-    dh_concat.extend_from_slice(dh2.as_bytes());
-    dh_concat.extend_from_slice(dh3.as_bytes());
-
-    // DH4 (optional): Alice_EK × Bob_OPK
-    if let Some(opk_bytes) = bob_one_time_prekey_pub {
-        let bob_opk = PublicKey::from(*opk_bytes);
-        let dh4 = ephemeral.diffie_hellman(&bob_opk);
-        dh_concat.extend_from_slice(dh4.as_bytes());
+    let dh4 = bob_one_time_prekey_pub.map(|opk| ephemeral.diffie_hellman(&PublicKey::from(*opk)));
+    for dh in [&dh1, &dh2, &dh3].into_iter().chain(dh4.as_ref()) {
+        if !dh.was_contributory() {
+            return Err(SanctumError::MalformedMessage(
+                "non-contributory X25519 key".into(),
+            ));
+        }
     }
 
-    // KDF: derive shared secret from concatenated DH outputs
-    let derived = kdf::derive_subkey(&dh_concat, b"", b"X3DH_shared_secret", 32)?;
-    dh_concat.zeroize();
-
-    let mut shared_secret = [0u8; 32];
-    shared_secret.copy_from_slice(&derived);
-
+    let mut dhs = vec![dh1.as_bytes(), dh2.as_bytes(), dh3.as_bytes()];
+    if let Some(d) = dh4.as_ref() {
+        dhs.push(d.as_bytes());
+    }
     Ok(X3dhInitResult {
-        shared_secret,
+        shared_secret: derive_sk(&dhs)?,
         ephemeral_public: ephemeral_public.to_bytes(),
     })
 }
 
-/// Bob responds to X3DH using Alice's ephemeral public key.
-///
-/// Performs the same DH operations from Bob's side to derive the same shared secret.
+/// Bob derives the same SK from Alice's identity and ephemeral keys.
 pub fn respond(
     bob_identity: &X25519Keypair,
     bob_signed_prekey: &X25519Keypair,
@@ -114,31 +130,25 @@ pub fn respond(
     let alice_ik = PublicKey::from(*alice_identity_pub);
     let alice_ek = PublicKey::from(*alice_ephemeral_pub);
 
-    // DH1: Bob_SPK × Alice_IK (same as Alice's DH1, commutative)
     let dh1 = bob_signed_prekey.secret.diffie_hellman(&alice_ik);
-    // DH2: Bob_IK × Alice_EK
     let dh2 = bob_identity.secret.diffie_hellman(&alice_ek);
-    // DH3: Bob_SPK × Alice_EK
     let dh3 = bob_signed_prekey.secret.diffie_hellman(&alice_ek);
-
-    let mut dh_concat = Vec::with_capacity(128);
-    dh_concat.extend_from_slice(dh1.as_bytes());
-    dh_concat.extend_from_slice(dh2.as_bytes());
-    dh_concat.extend_from_slice(dh3.as_bytes());
-
-    // DH4 (optional)
-    if let Some(opk) = bob_one_time_prekey {
-        let dh4 = opk.secret.diffie_hellman(&alice_ek);
-        dh_concat.extend_from_slice(dh4.as_bytes());
+    let dh4 = bob_one_time_prekey.map(|opk| opk.secret.diffie_hellman(&alice_ek));
+    for dh in [&dh1, &dh2, &dh3].into_iter().chain(dh4.as_ref()) {
+        if !dh.was_contributory() {
+            return Err(SanctumError::MalformedMessage(
+                "non-contributory X25519 key".into(),
+            ));
+        }
     }
 
-    let derived = kdf::derive_subkey(&dh_concat, b"", b"X3DH_shared_secret", 32)?;
-    dh_concat.zeroize();
-
-    let mut shared_secret = [0u8; 32];
-    shared_secret.copy_from_slice(&derived);
-
-    Ok(X3dhRespondResult { shared_secret })
+    let mut dhs = vec![dh1.as_bytes(), dh2.as_bytes(), dh3.as_bytes()];
+    if let Some(d) = dh4.as_ref() {
+        dhs.push(d.as_bytes());
+    }
+    Ok(X3dhRespondResult {
+        shared_secret: derive_sk(&dhs)?,
+    })
 }
 
 #[cfg(test)]
@@ -168,7 +178,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(alice_result.shared_secret, bob_result.shared_secret);
+        assert_eq!(*alice_result.shared_secret, *bob_result.shared_secret);
     }
 
     #[test]
@@ -195,7 +205,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(alice_result.shared_secret, bob_result.shared_secret);
+        assert_eq!(*alice_result.shared_secret, *bob_result.shared_secret);
     }
 
     #[test]
@@ -223,6 +233,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_ne!(result1.shared_secret, result2.shared_secret);
+        assert_ne!(*result1.shared_secret, *result2.shared_secret);
+    }
+
+    #[test]
+    fn low_order_peer_key_is_rejected() {
+        let alice_ik = X25519Keypair::generate();
+        let bob_spk = X25519Keypair::generate();
+        // The all-zero point yields an all-zero shared secret.
+        assert!(initiate(&alice_ik, &[0u8; 32], &bob_spk.public.to_bytes(), None).is_err());
     }
 }

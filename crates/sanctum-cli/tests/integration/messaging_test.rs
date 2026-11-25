@@ -32,7 +32,7 @@ impl CryptoPort for MockCrypto {
     ) -> Result<Vec<u8>, SanctumError> {
         Ok(ciphertext.to_vec())
     }
-    fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
+    fn pad(&self, plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError> {
         let real_len = plaintext.len() as u32;
         let needed = 4 + plaintext.len();
         let padded_len = needed.div_ceil(block_size) * block_size;
@@ -40,7 +40,7 @@ impl CryptoPort for MockCrypto {
         out.extend_from_slice(&real_len.to_be_bytes());
         out.extend_from_slice(plaintext);
         out.resize(padded_len, 0);
-        out
+        Ok(out)
     }
     fn unpad(&self, padded: &[u8]) -> Result<Vec<u8>, SanctumError> {
         if padded.len() < 4 {
@@ -102,7 +102,7 @@ fn message_send_receive_full_flow() {
     bob_msg_svc.mark_established(&alice);
 
     let plaintext = b"Hello Bob, this is a secret message!";
-    let padded = alice_msg_svc.pad_message(plaintext, &crypto);
+    let padded = alice_msg_svc.pad_message(plaintext, &crypto).unwrap();
     let ciphertext = padded.clone(); // passthrough
 
     let envelope = alice_msg_svc
@@ -138,7 +138,7 @@ fn replay_attack_detected() {
     msg_svc.register_session(alice.clone());
     msg_svc.mark_established(&alice);
 
-    let padded = msg_svc.pad_message(b"message", &crypto);
+    let padded = msg_svc.pad_message(b"message", &crypto).unwrap();
     let envelope = msg_svc
         .prepare_envelope(
             &alice,
@@ -174,7 +174,9 @@ fn sequence_numbers_auto_increment() {
 
     let seqs: Vec<u64> = (0..5)
         .map(|i| {
-            let padded = msg_svc.pad_message(format!("msg {i}").as_bytes(), &crypto);
+            let padded = msg_svc
+                .pad_message(format!("msg {i}").as_bytes(), &crypto)
+                .unwrap();
             msg_svc
                 .prepare_envelope(
                     &alice,
@@ -207,7 +209,7 @@ fn padding_preserves_message_content() {
     ];
 
     for msg in messages {
-        let padded = msg_svc.pad_message(msg, &crypto);
+        let padded = msg_svc.pad_message(msg, &crypto).unwrap();
         assert!(padded.len().is_multiple_of(256));
         assert!(padded.len() >= msg.len() + 4);
         let unpadded = msg_svc.unpad_message(&padded, &crypto).unwrap();
@@ -229,7 +231,9 @@ fn message_stored_and_retrieved_from_memory_backlog() {
     let mut storage = MemoryStorageAdapter::new(500);
 
     for i in 1..=3 {
-        let padded = msg_svc.pad_message(format!("message {i}").as_bytes(), &crypto);
+        let padded = msg_svc
+            .pad_message(format!("message {i}").as_bytes(), &crypto)
+            .unwrap();
         let envelope = msg_svc
             .prepare_envelope(
                 &alice,
@@ -260,7 +264,7 @@ fn message_envelope_survives_full_wire_round_trip() {
     msg_svc.register_session(alice.clone());
     msg_svc.mark_established(&alice);
 
-    let padded = msg_svc.pad_message(b"wire test", &crypto);
+    let padded = msg_svc.pad_message(b"wire test", &crypto).unwrap();
     let _envelope = msg_svc
         .prepare_envelope(
             &alice,

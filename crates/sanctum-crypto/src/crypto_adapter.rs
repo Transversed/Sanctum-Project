@@ -46,7 +46,7 @@ impl CryptoPort for SanctumCryptoProvider {
         aead::decrypt(AeadCipher::ChaCha20Poly1305, key, nonce, ciphertext, aad)
     }
 
-    fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
+    fn pad(&self, plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError> {
         padding::pad(plaintext, block_size)
     }
 
@@ -85,7 +85,7 @@ mod tests {
         let provider = SanctumCryptoProvider::new();
         let msg = b"test message";
 
-        let padded = provider.pad(msg, 256);
+        let padded = provider.pad(msg, 256).unwrap();
         assert_eq!(padded.len() % 256, 0);
 
         let recovered = provider.unpad(&padded).unwrap();

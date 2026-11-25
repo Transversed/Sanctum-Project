@@ -8,7 +8,7 @@
 //!    one-time prekey it names; the caller deletes that prekey afterwards.
 //! 4. `encrypt` / `decrypt` for every later message.
 
-use sanctum_crypto::ratchet::{Header, RatchetState};
+use sanctum_crypto::ratchet::{ad_prefix, Header, RatchetState};
 use sanctum_crypto::x3dh::{self, X25519Keypair};
 use sanctum_domain::errors::SanctumError;
 use std::collections::BTreeMap;
@@ -135,7 +135,9 @@ impl E2eSession {
             &theirs.signed_prekey_pub,
             opk.as_ref(),
         )?;
-        let ratchet = RatchetState::init_alice(x3dh.shared_secret, theirs.signed_prekey_pub)?;
+        // AD binds the session to both identity keys (initiator first).
+        let ad = ad_prefix(&ours.identity_pub(), &theirs.identity_pub);
+        let ratchet = RatchetState::init_alice(&x3dh.shared_secret, theirs.signed_prekey_pub, ad)?;
         let mut session = Self {
             ratchet,
             peer_identity_pub: theirs.identity_pub,
@@ -172,11 +174,9 @@ impl E2eSession {
             &init.initiator_identity_pub,
             &init.ephemeral_pub,
         )?;
-        let ratchet = RatchetState::init_bob(
-            x3dh.shared_secret,
-            ours.signed_prekey.secret.to_bytes().to_vec(),
-            ours.signed_prekey.public.to_bytes(),
-        );
+        let ad = ad_prefix(&init.initiator_identity_pub, &ours.identity_pub());
+        let spk_secret = zeroize::Zeroizing::new(ours.signed_prekey.secret.to_bytes());
+        let ratchet = RatchetState::init_bob(&x3dh.shared_secret, &spk_secret, ad);
         let mut session = Self {
             ratchet,
             peer_identity_pub: init.initiator_identity_pub,

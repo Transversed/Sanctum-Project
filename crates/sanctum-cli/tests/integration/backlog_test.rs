@@ -32,7 +32,7 @@ impl CryptoPort for MockCrypto {
     ) -> Result<Vec<u8>, SanctumError> {
         Ok(ciphertext.to_vec())
     }
-    fn pad(&self, plaintext: &[u8], block_size: usize) -> Vec<u8> {
+    fn pad(&self, plaintext: &[u8], block_size: usize) -> Result<Vec<u8>, SanctumError> {
         let real_len = plaintext.len() as u32;
         let needed = 4 + plaintext.len();
         let padded_len = needed.div_ceil(block_size) * block_size;
@@ -40,7 +40,7 @@ impl CryptoPort for MockCrypto {
         out.extend_from_slice(&real_len.to_be_bytes());
         out.extend_from_slice(plaintext);
         out.resize(padded_len, 0);
-        out
+        Ok(out)
     }
     fn unpad(&self, padded: &[u8]) -> Result<Vec<u8>, SanctumError> {
         if padded.len() < 4 {
@@ -97,7 +97,9 @@ fn make_envelopes(count: usize) -> Vec<sanctum_domain::entities::message::Messag
 
     (0..count)
         .map(|i| {
-            let padded = msg_svc.pad_message(format!("msg-{i}").as_bytes(), &crypto);
+            let padded = msg_svc
+                .pad_message(format!("msg-{i}").as_bytes(), &crypto)
+                .unwrap();
             msg_svc
                 .prepare_envelope(
                     &alice,

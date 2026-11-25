@@ -340,7 +340,7 @@ impl RoomCrypto {
         let mut plaintext = Vec::with_capacity(8 + text.len());
         plaintext.extend_from_slice(&timestamp.to_be_bytes());
         plaintext.extend_from_slice(text.as_bytes());
-        let padded = padding::pad(&plaintext, PADDING_BLOCK);
+        let padded = padding::pad(&plaintext, PADDING_BLOCK)?;
 
         self.sequence += 1;
         let sender = self.local_fingerprint().as_str().to_string();
