@@ -1,11 +1,15 @@
 //! Interactive chat loop — crossterm raw mode, status bar, colored messages, bottom prompt.
 
+use sanctum_app::auth_service::unix_now;
 use sanctum_app::sanitize::{sanitize_alias, sanitize_for_terminal};
-use sanctum_domain::entities::member::Fingerprint;
+use sanctum_domain::entities::member::{Fingerprint, Role};
 use sanctum_infra::codec::message_types;
 use sanctum_infra::e2e_session::{E2eSession, InitialMessage, PeerPrivateKeys};
+use sanctum_infra::identity::IdentityAdapter;
+use sanctum_infra::invite_codec::{self, InviteTarget};
 use sanctum_infra::noise_transport::NoiseTransport;
 use sanctum_infra::proto_codec::{self, pb, WireMessage};
+use std::sync::Arc;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::style::{
@@ -17,6 +21,15 @@ use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
 use tokio_util::sync::CancellationToken;
 
+/// What the room owner needs to issue invitations from the chat.
+pub struct InviteIssuer {
+    pub identity: Arc<IdentityAdapter>,
+    pub target: InviteTarget,
+}
+
+/// Longest accepted invitation lifetime from `/invite`.
+const MAX_INVITE_TTL_HOURS: u64 = 24 * 7;
+
 pub struct ChatConfig {
     pub room_name: String,
     pub room_mode: String,
@@ -24,6 +37,8 @@ pub struct ChatConfig {
     /// Allow sending without E2E (`--insecure-plaintext`). The host reads
     /// everything. Off by default; temporary until E2E is wired (P3.5).
     pub insecure_plaintext: bool,
+    /// Present for the room owner: enables `/invite`.
+    pub inviter: Option<InviteIssuer>,
 }
 
 impl Default for ChatConfig {
@@ -33,6 +48,7 @@ impl Default for ChatConfig {
             room_mode: "ephemeral".into(),
             tor_connected: false,
             insecure_plaintext: false,
+            inviter: None,
         }
     }
 }
@@ -194,6 +210,22 @@ pub async fn run_with_config(
                         if text.is_empty() { if raw_ok { draw_prompt(&mut out, &input_buf, rows); } continue; }
                         if text == "/exit" || text == "/quit" || text == "/q" { break; }
 
+                        if text == "/invite" || text.starts_with("/invite ") {
+                            let reply = invite_command(&text, cfg.inviter.as_ref());
+                            if raw_ok { goto_msg(&mut out, rows); }
+                            match reply {
+                                Ok(lines) => {
+                                    for (i, line) in lines.iter().enumerate() {
+                                        if i > 0 && raw_ok { goto_msg(&mut out, rows); }
+                                        write_sys(&mut out, line);
+                                    }
+                                }
+                                Err(e) => write_sys(&mut out, &format!("✗ {e}")),
+                            }
+                            if raw_ok { draw_prompt(&mut out, &input_buf, rows); }
+                            continue;
+                        }
+
                         // I1: no silent plaintext. Refuse unless explicitly allowed.
                         let (ct, rh) = match outgoing_payload(&text, &mut e2e_session, cfg.insecure_plaintext) {
                             Ok(p) => p,
@@ -349,6 +381,43 @@ fn write_sys(out: &mut Stdout, text: &str) {
 
 // ── Crypto helpers ──
 
+/// `/invite <fingerprint> [ttl_hours]`: issue an owner-signed invitation.
+fn invite_command(text: &str, issuer: Option<&InviteIssuer>) -> Result<Vec<String>, String> {
+    let mut parts = text.split_whitespace().skip(1);
+    let fp = parts
+        .next()
+        .ok_or("usage: /invite <fingerprint> [ttl_hours]")?;
+    let ttl_hours = match parts.next() {
+        Some(t) => t
+            .parse::<u64>()
+            .map_err(|_| "ttl must be a number of hours")?,
+        None => 24,
+    };
+    if ttl_hours == 0 || ttl_hours > MAX_INVITE_TTL_HOURS {
+        return Err(format!(
+            "ttl must be between 1 and {MAX_INVITE_TTL_HOURS} hours"
+        ));
+    }
+    let issuer = issuer.ok_or("only the room owner can issue invitations")?;
+    let invited = Fingerprint::new(fp).map_err(|e| format!("invalid fingerprint: {e}"))?;
+    let token = invite_codec::create_signed_invite(
+        issuer.identity.as_ref(),
+        &issuer.target,
+        invited.clone(),
+        Role::Member,
+        unix_now() + ttl_hours * 3600,
+    )
+    .map_err(|e| e.to_string())?;
+    let encoded = invite_codec::encode_invite(&token).map_err(|e| e.to_string())?;
+    Ok(vec![
+        format!(
+            "invitation for {} (single use, valid {ttl_hours}h) — send it out of band:",
+            invited.short()
+        ),
+        encoded,
+    ])
+}
+
 /// Why an outgoing message was not sent.
 #[derive(Debug, PartialEq, Eq)]
 enum SendRefusal {
@@ -460,6 +529,53 @@ fn now_ts() -> u64 {
 mod tests {
     use super::*;
     use sanctum_infra::e2e_session::PeerPrivateKeys;
+
+    fn issuer() -> InviteIssuer {
+        InviteIssuer {
+            identity: Arc::new(IdentityAdapter::generate()),
+            target: InviteTarget {
+                room_id: sanctum_domain::entities::room::RoomId::new(),
+                onion_address: "127.0.0.1".into(),
+                port: 9738,
+                host_noise_pubkey: vec![3u8; 32],
+            },
+        }
+    }
+
+    #[test]
+    fn invite_command_issues_an_owner_signed_token() {
+        use sanctum_domain::ports::identity::SignatureVerifier;
+        let iss = issuer();
+        let invitee = IdentityAdapter::generate();
+        let lines = invite_command(
+            &format!("/invite {} 2", invitee.fingerprint().as_str()),
+            Some(&iss),
+        )
+        .unwrap();
+        let token = invite_codec::decode_invite(&lines[1]).unwrap();
+        assert_eq!(&token.invited_fingerprint, invitee.fingerprint());
+        assert_eq!(token.role, Role::Member);
+        assert!(sanctum_infra::identity::Ed25519Verifier.verify(
+            &iss.identity.public_key_bytes(),
+            &token.signed_data(),
+            &token.signature
+        ));
+    }
+
+    #[test]
+    fn invite_command_rejects_bad_input() {
+        let iss = issuer();
+        let fp = IdentityAdapter::generate()
+            .fingerprint()
+            .as_str()
+            .to_string();
+        assert!(invite_command(&format!("/invite {fp} 3"), Some(&iss)).is_ok());
+        assert!(invite_command("/invite", Some(&iss)).is_err());
+        assert!(invite_command("/invite nothex", Some(&iss)).is_err());
+        assert!(invite_command(&format!("/invite {fp} 0"), Some(&iss)).is_err());
+        assert!(invite_command(&format!("/invite {fp} 9999"), Some(&iss)).is_err());
+        assert!(invite_command(&format!("/invite {fp}"), None).is_err());
+    }
 
     #[test]
     fn refuses_plaintext_by_default() {

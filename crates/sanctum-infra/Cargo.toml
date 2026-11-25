@@ -47,10 +47,15 @@ zeroize.workspace = true
 # Error handling
 thiserror.workspace = true
 
+[features]
+# Exposes `sanctum_infra::testkit` to integration tests of other crates.
+test-support = []
+
 [build-dependencies]
 prost-build.workspace = true
 
 [dev-dependencies]
+sanctum-infra = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "io-util"] }
 tempfile.workspace = true
 

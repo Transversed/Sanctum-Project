@@ -1,8 +1,11 @@
-// Sanctum Wire Protocol — v1
+// Sanctum Wire Protocol — v2
 //
 // All messages are serialized as protobuf and carried inside
 // the length-prefixed Frame (see codec.rs). The Frame.type byte
 // determines which protobuf message to decode from the payload.
+//
+// v2 is not compatible with v1. The version is bound by the Noise
+// prologue ("SANCTUM-NOISE-NK-v2"): a v1 peer fails the handshake.
 
 syntax = "proto3";
 package sanctum;
@@ -10,23 +13,20 @@ package sanctum;
 // ============================================================
 // Handshake (Noise NK)
 // ============================================================
-
-// C→H : 0x01
-message HandshakeInit {
-    uint32 protocol_version = 1;
-    uint32 min_supported_version = 2;
-    bytes noise_ephemeral_key = 3;     // 32 bytes X25519 ephemeral public key
-}
-
-// H→C : 0x02
-message HandshakeResp {
-    uint32 protocol_version = 1;
-    bytes noise_payload = 2;           // Noise handshake payload (encrypted)
-}
+//
+// Frames 0x01 (C→H) and 0x02 (H→C) carry raw Noise NK handshake
+// messages (no protobuf). Every later frame payload is encrypted with
+// the resulting Noise transport state.
 
 // ============================================================
-// Authentication (PGP challenge-response)
+// Authentication (Ed25519, bound to the Noise handshake hash)
 // ============================================================
+//
+// signature = Ed25519(identity_sk,
+//     "SANCTUM-AUTH-v2" ‖ len‖h ‖ len‖nonce ‖ timestamp(u64 BE)
+//     ‖ len‖room_id ‖ len‖server_id)
+// where h is the Noise handshake hash and len is a u32 BE length.
+// The host derives the fingerprint from ed25519_public_key itself.
 
 // H→C : 0x03
 message AuthChallenge {
@@ -38,10 +38,10 @@ message AuthChallenge {
 
 // C→H : 0x04
 message AuthResponse {
-    string fingerprint = 1;           // 40-char hex PGP fingerprint
-    bytes signature = 2;              // PGP signature over challenge bytes
-    bytes pgp_public_key = 3;         // PGP public key for verification
-    string display_alias = 4;         // User-chosen alias (max 20 chars)
+    bytes ed25519_public_key = 1;     // 32 bytes; fingerprint recomputed by the host
+    bytes signature = 2;              // see above (64 bytes)
+    string display_alias = 3;         // untrusted, sanitized and truncated by the host
+    string invite_token = 4;          // owner-signed invite (first join only), else empty
 }
 
 // H→C : 0x05

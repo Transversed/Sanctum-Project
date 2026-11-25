@@ -6,7 +6,7 @@ use sanctum_app::host_service::HostService;
 use sanctum_app::room_service::RoomService;
 use sanctum_domain::entities::member::{DisplayAlias, Role};
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::storage_memory::MemoryStorageAdapter;
 use tokio::sync::broadcast;
 

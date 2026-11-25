@@ -1,12 +1,14 @@
 //! Sanctum Infra — infrastructure adapters.
 //!
 //! Concrete implementations of domain ports:
-//! codec, storage (RAM + SQLite), identity (PGP stub),
+//! codec, storage (RAM + SQLite), identity (Ed25519),
 //! transport (framing), Tor control, and terminal renderer.
 
 #![forbid(unsafe_code)]
 #![allow(missing_docs)]
 #![deny(clippy::all)]
+
+use sanctum_domain::errors::SanctumError;
 
 /// Wire framing codec: length-prefixed messages.
 pub mod codec;
@@ -17,8 +19,8 @@ pub mod storage_memory;
 /// SQLite encrypted storage adapter (persistent mode).
 pub mod storage_sqlite;
 
-/// PGP identity adapter (sign/verify).
-pub mod identity_pgp;
+/// Ed25519 identity adapter (sign/verify, fingerprint derivation).
+pub mod identity;
 
 /// Transport framing and connection management.
 pub mod transport;
@@ -46,10 +48,16 @@ pub mod noise_transport;
 // E2E sessions module
 pub mod e2e_session;
 
-/// Re-export Noise keygen for convenience.
-pub fn noise_keygen() -> (Vec<u8>, Vec<u8>) {
-    sanctum_crypto::noise::generate_keypair().unwrap()
+/// Generate the host's Noise static key pair: (private, public).
+/// The private key is wiped from memory when dropped.
+pub fn noise_keygen() -> Result<(zeroize::Zeroizing<Vec<u8>>, Vec<u8>), SanctumError> {
+    let (private, public) = sanctum_crypto::noise::generate_keypair()?;
+    Ok((zeroize::Zeroizing::new(private), public))
 }
 
 /// Invite token codec: base64url encode/decode.
 pub mod invite_codec;
+
+/// Test support (real host on loopback). Not part of the production API.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;

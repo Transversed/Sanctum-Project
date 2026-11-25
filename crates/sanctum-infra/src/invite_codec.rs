@@ -16,7 +16,50 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use sanctum_domain::entities::invite::InviteToken;
+use sanctum_domain::entities::member::{Fingerprint, Role};
+use sanctum_domain::entities::room::RoomId;
 use sanctum_domain::errors::SanctumError;
+use sanctum_domain::ports::identity::Signer;
+
+/// Maximum accepted length of an encoded invite (defensive parsing bound).
+pub const MAX_ENCODED_INVITE_LEN: usize = 4096;
+
+/// Where and how an invited member reaches the room.
+#[derive(Debug, Clone)]
+pub struct InviteTarget {
+    pub room_id: RoomId,
+    pub onion_address: String,
+    pub port: u16,
+    pub host_noise_pubkey: Vec<u8>,
+}
+
+/// Create an invitation for `invited`, signed by `owner`.
+pub fn create_signed_invite(
+    owner: &dyn Signer,
+    target: &InviteTarget,
+    invited: Fingerprint,
+    role: Role,
+    expires_at: u64,
+) -> Result<InviteToken, SanctumError> {
+    if role == Role::Owner {
+        return Err(SanctumError::InvalidInviteToken(
+            "an invitation cannot grant the owner role".into(),
+        ));
+    }
+    let mut token = InviteToken {
+        room_id: target.room_id.clone(),
+        onion_address: target.onion_address.clone(),
+        port: target.port,
+        host_noise_pubkey: target.host_noise_pubkey.clone(),
+        inviter_fingerprint: owner.fingerprint().clone(),
+        invited_fingerprint: invited,
+        role,
+        expires_at,
+        signature: Vec::new(),
+    };
+    token.signature = owner.sign(&token.signed_data());
+    Ok(token)
+}
 
 /// Encode an InviteToken to a base64url string for sharing.
 pub fn encode_invite(token: &InviteToken) -> Result<String, SanctumError> {
@@ -29,6 +72,9 @@ pub fn encode_invite(token: &InviteToken) -> Result<String, SanctumError> {
 pub fn decode_invite(encoded: &str) -> Result<InviteToken, SanctumError> {
     // Strip whitespace (user might copy-paste with newlines)
     let clean = encoded.trim();
+    if clean.len() > MAX_ENCODED_INVITE_LEN {
+        return Err(SanctumError::InvalidInviteToken("invite too long".into()));
+    }
 
     let json_bytes = URL_SAFE_NO_PAD
         .decode(clean)
@@ -116,6 +162,59 @@ mod tests {
             expires_at: now + 3600,
             signature: vec![],
         }
+    }
+
+    #[test]
+    fn signed_invite_verifies_with_owner_key_only() {
+        use crate::identity::{Ed25519Verifier, IdentityAdapter};
+        use sanctum_domain::ports::identity::SignatureVerifier;
+
+        let owner = IdentityAdapter::generate();
+        let invitee = IdentityAdapter::generate();
+        let target = InviteTarget {
+            room_id: RoomId::new(),
+            onion_address: "x.onion".into(),
+            port: 9738,
+            host_noise_pubkey: vec![5u8; 32],
+        };
+        let token = create_signed_invite(
+            &owner,
+            &target,
+            invitee.fingerprint().clone(),
+            Role::Member,
+            10,
+        )
+        .unwrap();
+        let v = Ed25519Verifier;
+        assert!(v.verify(
+            &owner.public_key_bytes(),
+            &token.signed_data(),
+            &token.signature
+        ));
+        assert!(!v.verify(
+            &invitee.public_key_bytes(),
+            &token.signed_data(),
+            &token.signature
+        ));
+
+        // Survives encoding.
+        let decoded = decode_invite(&encode_invite(&token).unwrap()).unwrap();
+        assert_eq!(decoded.signed_data(), token.signed_data());
+        assert_eq!(decoded.signature, token.signature);
+
+        assert!(create_signed_invite(
+            &owner,
+            &target,
+            invitee.fingerprint().clone(),
+            Role::Owner,
+            10
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn oversized_invite_is_rejected() {
+        assert!(decode_invite(&"A".repeat(MAX_ENCODED_INVITE_LEN + 1)).is_err());
     }
 
     #[test]

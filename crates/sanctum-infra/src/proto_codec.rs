@@ -23,10 +23,6 @@ pub mod pb {
 /// A typed protocol message, decoded from or ready to encode into a Frame.
 #[derive(Debug, Clone)]
 pub enum WireMessage {
-    // -- Handshake --
-    HandshakeInit(pb::HandshakeInit),
-    HandshakeResp(pb::HandshakeResp),
-
     // -- Auth --
     AuthChallenge(pb::AuthChallenge),
     AuthResponse(pb::AuthResponse),
@@ -65,12 +61,6 @@ pub enum WireMessage {
 /// Encode a typed WireMessage into a Frame ready for wire transmission.
 pub fn proto_encode(msg: &WireMessage) -> Result<Frame, SanctumError> {
     match msg {
-        WireMessage::HandshakeInit(m) => {
-            Ok(Frame::new(message_types::HANDSHAKE_INIT, encode_pb(m)))
-        }
-        WireMessage::HandshakeResp(m) => {
-            Ok(Frame::new(message_types::HANDSHAKE_RESP, encode_pb(m)))
-        }
         WireMessage::AuthChallenge(m) => {
             Ok(Frame::new(message_types::AUTH_CHALLENGE, encode_pb(m)))
         }
@@ -110,8 +100,6 @@ pub fn proto_encode(msg: &WireMessage) -> Result<Frame, SanctumError> {
 /// Decode a Frame into a typed WireMessage.
 pub fn proto_decode(frame: &Frame) -> Result<WireMessage, SanctumError> {
     match frame.message_type {
-        message_types::HANDSHAKE_INIT => Ok(WireMessage::HandshakeInit(decode_pb(&frame.payload)?)),
-        message_types::HANDSHAKE_RESP => Ok(WireMessage::HandshakeResp(decode_pb(&frame.payload)?)),
         message_types::AUTH_CHALLENGE => Ok(WireMessage::AuthChallenge(decode_pb(&frame.payload)?)),
         message_types::AUTH_RESPONSE => Ok(WireMessage::AuthResponse(decode_pb(&frame.payload)?)),
         message_types::AUTH_RESULT => Ok(WireMessage::AuthResult(decode_pb(&frame.payload)?)),
@@ -164,24 +152,10 @@ mod tests {
     use crate::codec;
 
     #[test]
-    fn handshake_init_round_trip() {
-        let msg = WireMessage::HandshakeInit(pb::HandshakeInit {
-            protocol_version: 1,
-            min_supported_version: 1,
-            noise_ephemeral_key: vec![42u8; 32],
-        });
-
-        let frame = proto_encode(&msg).unwrap();
-        assert_eq!(frame.message_type, message_types::HANDSHAKE_INIT);
-
-        let decoded = proto_decode(&frame).unwrap();
-        match decoded {
-            WireMessage::HandshakeInit(h) => {
-                assert_eq!(h.protocol_version, 1);
-                assert_eq!(h.noise_ephemeral_key.len(), 32);
-            }
-            _ => panic!("wrong type"),
-        }
+    fn handshake_frames_are_not_protobuf() {
+        // 0x01/0x02 carry raw Noise bytes and must never be decoded here.
+        let frame = Frame::new(message_types::HANDSHAKE_INIT, vec![1, 2, 3]);
+        assert!(proto_decode(&frame).is_err());
     }
 
     #[test]

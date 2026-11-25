@@ -22,32 +22,36 @@ pub struct PreKeyBundle {
     pub one_time_prekey_id: Option<u32>,
 }
 
-/// Public identity combining PGP (auth) and X25519 (encryption).
+/// Public identity combining Ed25519 (auth) and X25519 (encryption).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     fingerprint: Fingerprint,
-    pgp_public_key: Vec<u8>,
+    identity_public_key: Vec<u8>,
     bundle: PreKeyBundle,
 }
 
 impl Identity {
     /// Create a new public identity.
-    pub fn new(fingerprint: Fingerprint, pgp_public_key: Vec<u8>, bundle: PreKeyBundle) -> Self {
+    pub fn new(
+        fingerprint: Fingerprint,
+        identity_public_key: Vec<u8>,
+        bundle: PreKeyBundle,
+    ) -> Self {
         Self {
             fingerprint,
-            pgp_public_key,
+            identity_public_key,
             bundle,
         }
     }
 
-    /// PGP fingerprint.
+    /// Fingerprint.
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
     }
 
-    /// PGP public key.
-    pub fn pgp_public_key(&self) -> &[u8] {
-        &self.pgp_public_key
+    /// Ed25519 public key.
+    pub fn identity_public_key(&self) -> &[u8] {
+        &self.identity_public_key
     }
 
     /// PreKey Bundle.

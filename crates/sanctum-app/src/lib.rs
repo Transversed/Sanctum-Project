@@ -8,7 +8,7 @@
 #![allow(missing_docs)]
 #![deny(clippy::all)]
 
-/// PGP challenge-response authentication.
+/// Channel-bound Ed25519 challenge-response authentication.
 pub mod auth_service;
 
 /// Room CRUD, membership, invitations.

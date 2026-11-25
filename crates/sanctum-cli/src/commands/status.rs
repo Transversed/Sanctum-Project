@@ -1,7 +1,7 @@
 //! `sanctum status` — show local profile status (no network access).
 
 use crate::config::Config;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 
 /// Run the status command.
 pub async fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {

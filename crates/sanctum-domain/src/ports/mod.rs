@@ -2,7 +2,7 @@
 
 /// Cryptographic operations.
 pub mod crypto;
-/// PGP identity.
+/// Ed25519 identity (signing, verification).
 pub mod identity;
 /// Storage backend.
 pub mod storage;

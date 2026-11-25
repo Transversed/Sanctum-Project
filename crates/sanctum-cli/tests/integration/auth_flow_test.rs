@@ -1,149 +1,157 @@
-//! Integration test: full authentication flow.
+//! Authentication flow with real Ed25519 identities (protocol v2).
 //!
-//! Covers AT-04 (auth), AT-10 (nominative invite), AT-12 (version check).
+//! The logic is unit-tested in sanctum-app with a toy scheme; here the real
+//! adapters (Ed25519Verifier, IdentityAdapter, signed invites) are combined.
 
-use sanctum_app::auth_service::{AuthResponse, AuthService};
-use sanctum_domain::entities::member::Fingerprint;
-use sanctum_infra::codec::{self, message_types, Frame};
-use sanctum_infra::identity_pgp::IdentityAdapter;
-use std::collections::HashSet;
+use sanctum_app::auth_service::{unix_now, Admission, AuthResponse, AuthService, RoomAdmission};
+use sanctum_domain::entities::invite::InviteToken;
+use sanctum_domain::entities::member::{Fingerprint, Role};
+use sanctum_domain::entities::room::RoomId;
+use sanctum_domain::ports::identity::Signer;
+use sanctum_infra::identity::{Ed25519Verifier, IdentityAdapter};
+use sanctum_infra::invite_codec::{create_signed_invite, InviteTarget};
+use std::collections::HashMap;
 
-fn allowed_set(fps: &[&Fingerprint]) -> HashSet<Fingerprint> {
-    fps.iter().map(|f| (*f).clone()).collect()
+const HOST_KEY: [u8; 32] = [42u8; 32];
+
+struct Room {
+    id: RoomId,
+    owner: IdentityAdapter,
+    members: HashMap<Fingerprint, Role>,
 }
 
-#[test]
-fn full_auth_challenge_response_with_identity_adapter() {
-    let client_identity = IdentityAdapter::generate();
-    let host_noise_pubkey = vec![42u8; 32];
-    let mut auth_svc = AuthService::new();
-    let allowed = allowed_set(&[client_identity.fingerprint()]);
-
-    let challenge = auth_svc.create_challenge(
-        &sanctum_domain::entities::room::RoomId::new(),
-        &host_noise_pubkey,
-    );
-
-    let server_id_ok = AuthService::verify_server_id(&challenge, &host_noise_pubkey);
-    assert!(server_id_ok.is_ok());
-
-    let challenge_bytes = AuthService::challenge_to_bytes(&challenge);
-    let signature = client_identity.sign(&challenge_bytes).unwrap();
-
-    let response = AuthResponse {
-        fingerprint: client_identity.fingerprint().clone(),
-        signature,
-        pgp_public_key: client_identity.public_key_bytes(),
-        display_alias: "client-alice".into(),
-    };
-
-    let result = auth_svc.verify_response(&challenge, &response, &allowed);
-    assert!(
-        result.is_ok(),
-        "auth should succeed for allowed fingerprint"
-    );
-}
-
-#[test]
-fn auth_rejects_non_invited_fingerprint() {
-    let client_identity = IdentityAdapter::generate();
-    let intruder_identity = IdentityAdapter::generate();
-    let host_noise_pubkey = vec![42u8; 32];
-    let mut auth_svc = AuthService::new();
-    let allowed = allowed_set(&[client_identity.fingerprint()]);
-
-    let challenge = auth_svc.create_challenge(
-        &sanctum_domain::entities::room::RoomId::new(),
-        &host_noise_pubkey,
-    );
-
-    let challenge_bytes = AuthService::challenge_to_bytes(&challenge);
-    let signature = intruder_identity.sign(&challenge_bytes).unwrap();
-
-    let response = AuthResponse {
-        fingerprint: intruder_identity.fingerprint().clone(),
-        signature,
-        pgp_public_key: intruder_identity.public_key_bytes(),
-        display_alias: "intruder".into(),
-    };
-
-    let result = auth_svc.verify_response(&challenge, &response, &allowed);
-    assert!(result.is_err(), "intruder should be rejected");
-}
-
-#[test]
-fn client_detects_server_id_mismatch() {
-    let host_noise_pubkey = vec![42u8; 32];
-    let fake_noise_pubkey = vec![99u8; 32];
-    let auth_svc = AuthService::new();
-
-    let challenge = auth_svc.create_challenge(
-        &sanctum_domain::entities::room::RoomId::new(),
-        &host_noise_pubkey,
-    );
-
-    assert!(AuthService::verify_server_id(&challenge, &host_noise_pubkey).is_ok());
-    assert!(AuthService::verify_server_id(&challenge, &fake_noise_pubkey).is_err());
-}
-
-#[test]
-fn auth_challenge_survives_codec_round_trip() {
-    let data = b"nonce:1234|timestamp:1700000000|room:abc|server:xyz";
-    let frame = Frame::new(message_types::AUTH_CHALLENGE, data.to_vec());
-    let encoded = codec::encode_frame(&frame);
-    let mut buf = bytes::BytesMut::from(&encoded[..]);
-    let decoded = codec::decode_frame(&mut buf).unwrap().unwrap();
-    assert_eq!(decoded.message_type, message_types::AUTH_CHALLENGE);
-    assert_eq!(decoded.payload, data);
-}
-
-#[test]
-fn auth_response_survives_codec_round_trip() {
-    let data = b"fp:AABB...|sig:deadbeef|pk:0102|alias:alice";
-    let frame = Frame::new(message_types::AUTH_RESPONSE, data.to_vec());
-    let encoded = codec::encode_frame(&frame);
-    let mut buf = bytes::BytesMut::from(&encoded[..]);
-    let decoded = codec::decode_frame(&mut buf).unwrap().unwrap();
-    assert_eq!(decoded.message_type, message_types::AUTH_RESPONSE);
-    assert_eq!(decoded.payload, data);
-}
-
-#[test]
-fn auth_rate_limits_per_fingerprint() {
-    let mut auth_svc = AuthService::new();
-    let host_noise_pubkey = vec![42u8; 32];
-    let room_id = sanctum_domain::entities::room::RoomId::new();
-    let attacker = IdentityAdapter::generate();
-
-    let empty_allowed: HashSet<Fingerprint> = HashSet::new();
-    let real_allowed = allowed_set(&[attacker.fingerprint()]);
-
-    for _ in 0..3 {
-        let challenge = auth_svc.create_challenge(&room_id, &host_noise_pubkey);
-        let challenge_bytes = AuthService::challenge_to_bytes(&challenge);
-        let sig = attacker.sign(&challenge_bytes).unwrap();
-        let response = AuthResponse {
-            fingerprint: attacker.fingerprint().clone(),
-            signature: sig,
-            pgp_public_key: attacker.public_key_bytes(),
-            display_alias: "attacker".into(),
-        };
-        let result = auth_svc.verify_response(&challenge, &response, &empty_allowed);
-        assert!(result.is_err());
+impl Room {
+    fn new() -> Self {
+        let owner = IdentityAdapter::generate();
+        let mut members = HashMap::new();
+        members.insert(owner.fingerprint().clone(), Role::Owner);
+        Self {
+            id: RoomId::new(),
+            owner,
+            members,
+        }
     }
 
-    let challenge = auth_svc.create_challenge(&room_id, &host_noise_pubkey);
-    let challenge_bytes = AuthService::challenge_to_bytes(&challenge);
-    let sig = attacker.sign(&challenge_bytes).unwrap();
-    let response = AuthResponse {
-        fingerprint: attacker.fingerprint().clone(),
-        signature: sig,
-        pgp_public_key: attacker.public_key_bytes(),
-        display_alias: "attacker".into(),
-    };
-    let result = auth_svc.verify_response(&challenge, &response, &real_allowed);
-    assert!(
-        result.is_err(),
-        "should be rate-limited after 3 failed attempts"
-    );
+    fn admission(&self) -> (Fingerprint, Vec<u8>) {
+        (
+            self.owner.fingerprint().clone(),
+            self.owner.public_key_bytes(),
+        )
+    }
+
+    fn invite(&self, who: &IdentityAdapter, signer: &dyn Signer) -> InviteToken {
+        let target = InviteTarget {
+            room_id: self.id.clone(),
+            onion_address: "127.0.0.1".into(),
+            port: 9738,
+            host_noise_pubkey: HOST_KEY.to_vec(),
+        };
+        create_signed_invite(
+            signer,
+            &target,
+            who.fingerprint().clone(),
+            Role::Member,
+            unix_now() + 60,
+        )
+        .unwrap()
+    }
+
+    fn authenticate(
+        &self,
+        svc: &mut AuthService,
+        who: &IdentityAdapter,
+        h: &[u8],
+        invite: Option<InviteToken>,
+    ) -> Result<Admission, String> {
+        let (owner_fp, owner_pk) = self.admission();
+        let admission = RoomAdmission {
+            room_id: &self.id,
+            owner_fingerprint: &owner_fp,
+            owner_public_key: &owner_pk,
+            host_noise_pubkey: &HOST_KEY,
+            members: &self.members,
+        };
+        let challenge = svc.create_challenge(&self.id, &HOST_KEY);
+        let response = AuthResponse {
+            public_key: who.public_key_bytes(),
+            signature: Signer::sign(who, &AuthService::signing_payload(h, &challenge)),
+            display_alias: "x".into(),
+            invite,
+        };
+        svc.verify_response(
+            &challenge,
+            h,
+            &response,
+            &admission,
+            &Ed25519Verifier,
+            unix_now(),
+        )
+        .map(|a| a.admission)
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn owner_is_recognized_from_the_proven_key() {
+    let room = Room::new();
+    let mut svc = AuthService::new();
+    let a = room
+        .authenticate(&mut svc, &room.owner, &[1u8; 32], None)
+        .unwrap();
+    assert_eq!(a, Admission::Member(Role::Owner));
+}
+
+#[test]
+fn stranger_is_rejected_without_invitation() {
+    let room = Room::new();
+    let mut svc = AuthService::new();
+    let mallory = IdentityAdapter::generate();
+    assert!(room
+        .authenticate(&mut svc, &mallory, &[1u8; 32], None)
+        .is_err());
+}
+
+#[test]
+fn owner_signed_invitation_admits_exactly_once() {
+    let room = Room::new();
+    let mut svc = AuthService::new();
+    let alice = IdentityAdapter::generate();
+    let invite = room.invite(&alice, &room.owner);
+
+    let a = room
+        .authenticate(&mut svc, &alice, &[1u8; 32], Some(invite.clone()))
+        .unwrap();
+    assert_eq!(a, Admission::Invited(Role::Member));
+
+    let err = room
+        .authenticate(&mut svc, &alice, &[2u8; 32], Some(invite))
+        .unwrap_err();
+    assert!(err.contains("already used"), "{err}");
+}
+
+#[test]
+fn self_signed_invitation_is_rejected() {
+    let room = Room::new();
+    let mut svc = AuthService::new();
+    let mallory = IdentityAdapter::generate();
+    // Mallory forges an invite claiming the owner as inviter.
+    let mut forged = room.invite(&mallory, &mallory);
+    forged.inviter_fingerprint = room.owner.fingerprint().clone();
+    let err = room
+        .authenticate(&mut svc, &mallory, &[1u8; 32], Some(forged))
+        .unwrap_err();
+    assert!(err.contains("invalid invitation signature"), "{err}");
+}
+
+#[test]
+fn invitation_cannot_be_used_by_someone_else() {
+    let room = Room::new();
+    let mut svc = AuthService::new();
+    let alice = IdentityAdapter::generate();
+    let mallory = IdentityAdapter::generate();
+    let invite = room.invite(&alice, &room.owner);
+    let err = room
+        .authenticate(&mut svc, &mallory, &[1u8; 32], Some(invite))
+        .unwrap_err();
+    assert!(err.contains("another identity"), "{err}");
 }

@@ -2,10 +2,9 @@
 
 use crate::config::Config;
 use clap::Subcommand;
-use sanctum_domain::entities::invite::InviteToken;
 use sanctum_domain::entities::member::{Fingerprint, Role};
 use sanctum_domain::entities::room::RoomId;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
 
 #[derive(Subcommand)]
@@ -16,7 +15,7 @@ pub enum RoomAction {
     },
     /// Generate an invite token for a member.
     Invite {
-        /// PGP fingerprint of the invitee (40 hex chars).
+        /// Fingerprint of the invitee (40 hex chars).
         fingerprint: String,
         /// .onion address (or 127.0.0.1 for local).
         #[arg(long)]
@@ -100,22 +99,20 @@ fn run_invite(
     // Host Noise public key: explicit, validated, never a silent fallback.
     let noise_pub = invite_codec::decode_host_key(host_key)?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let token = InviteToken {
+    let target = invite_codec::InviteTarget {
         room_id: rid,
         onion_address: room_onion.to_string(),
         port: room_port,
         host_noise_pubkey: noise_pub,
-        inviter_fingerprint: inviter_fp.clone(),
-        invited_fingerprint: invited_fp.clone(),
-        role: member_role,
-        expires_at: now + (ttl_hours * 3600),
-        signature: vec![],
     };
+    let expires_at = sanctum_app::auth_service::unix_now() + ttl_hours * 3600;
+    let token = invite_codec::create_signed_invite(
+        &identity,
+        &target,
+        invited_fp.clone(),
+        member_role,
+        expires_at,
+    )?;
 
     let encoded = invite_codec::encode_invite(&token)?;
 

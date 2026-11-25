@@ -14,8 +14,8 @@ pub enum SanctumError {
     #[error("authentication failed: {reason}")]
     AuthFailed { reason: String },
 
-    /// Invalid PGP signature.
-    #[error("invalid PGP signature")]
+    /// Invalid signature.
+    #[error("invalid signature")]
     InvalidSignature,
 
     /// Replay detected.

@@ -3,11 +3,10 @@
 use crate::commands::chat_loop;
 use crate::config::Config;
 use sanctum_app::sanitize::sanitize_for_terminal;
-use sanctum_infra::client_connector;
+use sanctum_infra::client_connector::{self, ClientCredentials};
 use sanctum_infra::e2e_session::PeerPrivateKeys;
-use sanctum_infra::identity_pgp::IdentityAdapter;
+use sanctum_infra::identity::IdentityAdapter;
 use sanctum_infra::invite_codec;
-use sanctum_infra::tor_control::TorConfig;
 use tokio_util::sync::CancellationToken;
 
 pub async fn run(
@@ -43,29 +42,40 @@ pub async fn run(
     // E2E keys
     let e2e_keys = PeerPrivateKeys::generate(5);
 
-    // Connect
-    let is_local = invite.onion_address == "localhost" || invite.onion_address.starts_with("127.");
+    // Connect: Tor for .onion, direct TCP only for loopback (local tests).
+    // Anything else would be a clearnet connection: refused.
+    let creds = ClientCredentials {
+        identity: &identity,
+        display_alias: &alias,
+        invite_token: Some(token),
+    };
+    let is_loopback = invite.onion_address == "localhost"
+        || invite
+            .onion_address
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
 
-    let session = if !is_local && invite.onion_address.ends_with(".onion") {
+    let session = if invite.onion_address.ends_with(".onion") {
         println!("[sanctum] connecting via Tor (may take 10-30s)...");
-        let tc = TorConfig {
-            socks_addr: format!("127.0.0.1:{}", config.tor.socks_port),
-            ..TorConfig::default()
-        };
+        let socks_addr = format!("127.0.0.1:{}", config.tor.socks_port);
         client_connector::connect_via_tor_and_auth(
-            &tc.socks_addr,
+            &socks_addr,
             &invite.onion_address,
             invite.port,
-            &local_fp,
-            &alias,
+            &creds,
             &invite.host_noise_pubkey,
         )
         .await?
-    } else {
+    } else if is_loopback {
         let addr = format!("{}:{}", invite.onion_address, invite.port);
-        println!("[sanctum] connecting to {addr}...");
-        client_connector::connect_and_auth(&addr, &local_fp, &alias, &invite.host_noise_pubkey)
-            .await?
+        println!("[sanctum] connecting to {addr} (local, no Tor)...");
+        client_connector::connect_and_auth(&addr, &creds, &invite.host_noise_pubkey).await?
+    } else {
+        return Err(format!(
+            "refusing to connect to '{}': not a .onion address (Sanctum never uses clearnet)",
+            sanitize_for_terminal(&invite.onion_address)
+        )
+        .into());
     };
 
     println!(
@@ -84,8 +94,9 @@ pub async fn run(
     let chat_cfg = chat_loop::ChatConfig {
         room_name: invite.room_id.as_str().chars().take(8).collect(),
         room_mode: "ephemeral".into(),
-        tor_connected: !is_local,
+        tor_connected: !is_loopback,
         insecure_plaintext,
+        inviter: None,
     };
     chat_loop::run_with_config(
         session.transport,
