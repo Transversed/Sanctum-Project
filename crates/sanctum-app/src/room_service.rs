@@ -134,7 +134,8 @@ impl RoomService {
             });
         }
 
-        let expires_at = now() + ttl_secs;
+        let issued_at = now();
+        let expires_at = issued_at + ttl_secs;
 
         Ok(InviteToken {
             room_id: room.id().clone(),
@@ -145,7 +146,8 @@ impl RoomService {
             invited_fingerprint,
             role,
             expires_at,
-            signature: Vec::new(), // Caller signs via IdentityPort
+            issued_at,
+            signature: Vec::new(), // Caller signs it (Signer port)
         })
     }
 

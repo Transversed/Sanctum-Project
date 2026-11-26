@@ -55,6 +55,7 @@ pub fn create_signed_invite(
         invited_fingerprint: invited,
         role,
         expires_at,
+        issued_at: sanctum_app::auth_service::unix_now(),
         signature: Vec::new(),
     };
     token.signature = owner.sign(&token.signed_data());
@@ -160,6 +161,7 @@ mod tests {
                 .unwrap(),
             role: Role::Member,
             expires_at: now + 3600,
+            issued_at: 1,
             signature: vec![],
         }
     }

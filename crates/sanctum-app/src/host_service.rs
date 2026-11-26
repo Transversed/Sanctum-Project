@@ -3,7 +3,7 @@
 //! The host is the central relay for a room. It does NOT decrypt E2E
 //! messages — it only sees opaque ciphertexts and routes them.
 
-use sanctum_domain::entities::member::Fingerprint;
+use sanctum_domain::entities::member::{Fingerprint, Role};
 use sanctum_domain::entities::room::{Room, RoomId};
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::events::SanctumEvent;
@@ -47,6 +47,36 @@ impl HostService {
     /// Get the room mutably.
     pub fn room_mut(&mut self) -> &mut Room {
         &mut self.room
+    }
+
+    /// Owner-only: revoke `target` (removed from the room if it is a member).
+    ///
+    /// Returns the target's connection id when it is connected, so the
+    /// caller can close that connection. Revoking someone who is not (yet) a
+    /// member is allowed: it only blocks their pending invitations, which the
+    /// caller records in `AuthService::revoke`.
+    pub fn revoke_member(
+        &mut self,
+        requester: &Fingerprint,
+        target: &Fingerprint,
+    ) -> Result<Option<u64>, SanctumError> {
+        let is_owner = self
+            .room
+            .find_member(requester)
+            .is_some_and(|m| m.is_active() && m.role() == Role::Owner);
+        if !is_owner {
+            return Err(SanctumError::AuthFailed {
+                reason: "only the room owner can remove members".into(),
+            });
+        }
+        if requester == target {
+            return Err(SanctumError::CannotRevokeOwner);
+        }
+        match self.room.revoke_member(target) {
+            Ok(()) | Err(SanctumError::MemberNotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(self.connection_id_for(target))
     }
 
     /// Get connected clients.

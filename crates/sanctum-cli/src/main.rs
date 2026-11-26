@@ -160,6 +160,10 @@ fn main() {
 
         run(cli.command, config, shutdown).await
     });
+    // The keyboard reader is a blocking task stuck in a stdin read: waiting
+    // for it would keep a disconnected (or removed) client alive until the
+    // next key press. Nothing else is pending once `run` has returned.
+    rt.shutdown_background();
 
     if let Err(e) = result {
         // Errors can embed remote strings (e.g. AuthResult.error_message).

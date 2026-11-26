@@ -190,6 +190,7 @@ impl Room {
     }
 
     /// Add a member. Fails if room is full or fingerprint already active.
+    /// A previously revoked entry for the same fingerprint is replaced.
     pub fn add_member(&mut self, member: Member) -> Result<(), SanctumError> {
         if self.is_full() {
             return Err(SanctumError::RoomFull {
@@ -204,6 +205,8 @@ impl Room {
                 ));
             }
         }
+        self.members
+            .retain(|m| m.fingerprint() != member.fingerprint());
         self.members.push(member);
         Ok(())
     }
@@ -322,5 +325,36 @@ mod tests {
         assert_eq!(config.max_members, 50);
         assert_eq!(config.backlog_max_messages, 5000);
         assert_eq!(config.message_padding_block, 256);
+    }
+
+    #[test]
+    fn revoked_member_can_be_readmitted_and_is_authorized_again() {
+        let owner = Member::new(
+            make_fp("1"),
+            vec![0; 32],
+            DisplayAlias::new("o").unwrap(),
+            Role::Owner,
+            0,
+        );
+        let mut room = Room::new("r", RoomMode::Ephemeral, RoomConfig::default(), owner);
+        let alice = || {
+            Member::new(
+                make_fp("2"),
+                vec![0; 32],
+                DisplayAlias::new("a").unwrap(),
+                Role::Member,
+                0,
+            )
+        };
+        room.add_member(alice()).unwrap();
+        room.revoke_member(&make_fp("2")).unwrap();
+        assert!(!room.is_authorized(&make_fp("2")));
+        room.add_member(alice()).unwrap();
+        assert!(room.is_authorized(&make_fp("2")));
+        assert_eq!(room.members().len(), 2, "no duplicate entry");
+        assert!(
+            room.revoke_member(&make_fp("1")).is_err(),
+            "owner cannot be revoked"
+        );
     }
 }
