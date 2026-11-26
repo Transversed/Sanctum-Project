@@ -105,7 +105,8 @@ pub fn decrypt_secret_key(
 /// Write `bytes` to `path` atomically, readable by the owner only.
 ///
 /// The temporary file is created with mode 0600 and `O_EXCL`, synced, then
-/// renamed over `path`.
+/// renamed over `path`, and the directory is synced so that the rename
+/// survives a crash.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), SanctumError> {
     use std::io::Write;
     let dir = path
@@ -136,7 +137,11 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), SanctumError>
         let mut file = options.open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok::<(), std::io::Error>(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -246,8 +251,14 @@ impl IdentityAdapter {
 
     /// Fingerprint of the identity in `dir`, from the public file only.
     pub fn public_fingerprint_in(dir: &Path) -> Result<Fingerprint, SanctumError> {
+        fingerprint_of_public_key(&Self::public_key_in(dir)?)
+    }
+
+    /// Public key stored in `dir` (no passphrase needed).
+    pub fn public_key_in(dir: &Path) -> Result<Vec<u8>, SanctumError> {
         let pk = std::fs::read(dir.join(PUB_KEY_FILE)).map_err(|e| storage(e.to_string()))?;
-        fingerprint_of_public_key(&pk)
+        fingerprint_of_public_key(&pk)?;
+        Ok(pk)
     }
 
     /// Our fingerprint.
@@ -341,7 +352,8 @@ fn derive_fingerprint(verifying_key: &VerifyingKey) -> Fingerprint {
 }
 
 /// Get the sanctum home directory.
-fn sanctum_home() -> PathBuf {
+/// `~/.sanctum`: identity, configuration and (persistent mode) host stores.
+pub fn sanctum_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".sanctum")

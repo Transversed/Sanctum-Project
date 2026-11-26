@@ -73,12 +73,18 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
 | Identity key | `~/.sanctum/keys/identity.key`, Argon2id + ChaCha20-Poly1305, mode 0600 | Until deleted |
 | Public key, fingerprint, config | `~/.sanctum/` (0600 files, 0700 directory) | Until deleted |
 | Noise host key, room, members, bundles, nonces, used invitations, revocation times | Host RAM | Host process |
+| Persistent room: room, members (public keys), revocations, consumed invitations until expiry, Noise host key, onion key | `~/.sanctum/hosts/<room_id>/state.sanctum` (sealed, 0600, directory 0700) + `lock` | Until `host delete` |
 | X25519 keys, ratchet sessions, skipped keys | Member RAM (`Zeroizing`) | Member process |
 
-Nothing is written to disk while hosting or chatting (CI check with `strace`).
+Nothing is written to disk while hosting or chatting in ephemeral mode (CI
+check with `strace`). A persistent host (`host create --mode persistent`,
+`host start`) writes only its sealed state file: the `HostStatePort` is
+called *before* an admission or a revocation is confirmed, saves are atomic
+(temporary file, `fsync`, `rename`, `fsync` of the directory) and serialized, and
+a failed save stops the host. Nonces, connections and bundles stay in RAM.
 
 **Sealed files (`SANCTUMS` v1, `sanctum_crypto::sealed`)** are the container of
-the persistent mode (being built, see the ROADMAP). A 111-byte authenticated
+the persistent mode. A 111-byte authenticated
 header (magic, version, kind, Argon2id parameters, salt, wrapped master key)
 followed by `nonce ‖ XChaCha20-Poly1305(K_kind, nonce, plaintext, AD = header)`.
 The random master key is wrapped by `Argon2id(passphrase)`, so unlocking costs
@@ -87,8 +93,9 @@ one Argon2id run and every later save only draws a fresh 24-byte nonce;
 backlog and client state. Argon2id parameters are bounded when parsing (8 MiB to
 1 GiB, ≤ 16 passes and lanes). Known-answer vectors come from an independent
 Python implementation (`tests/kat/generate_sealed_vectors.py`).
-`--mode persistent` is refused until the persistent mode (v0.2) lands: sealed
-encrypted files, no SQLite (see the CHANGELOG and the ROADMAP).
+The host state is the protobuf message `HostStateV1` (`proto/sanctum_store.proto`)
+sealed as kind `host-state`; the onion key is handed to Tor with `ADD_ONION
+ED25519-V3:<key>` at each start (no `HiddenServiceDir`, no `Detach`).
 
 ## 4. Invariants
 

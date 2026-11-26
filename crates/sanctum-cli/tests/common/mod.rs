@@ -52,11 +52,17 @@ impl User {
     }
 
     pub fn spawn(&self, args: &[&str]) -> Proc {
+        self.spawn_env(args, &[])
+    }
+
+    /// Like `spawn`, with extra environment variables.
+    pub fn spawn_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Proc {
         let mut child = Command::new(bin())
             .arg("--no-banner")
             .args(args)
             .env("HOME", &self.home)
             .env("SANCTUM_PASSPHRASE", PASSPHRASE)
+            .envs(envs.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

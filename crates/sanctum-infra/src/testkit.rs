@@ -10,12 +10,13 @@ use crate::codec::Frame;
 use crate::host_listener::{HostLimits, HostListener};
 use crate::identity::IdentityAdapter;
 use crate::invite_codec::{self, InviteTarget};
-use sanctum_app::auth_service::unix_now;
+use sanctum_app::auth_service::{unix_now, AuthService};
 use sanctum_app::host_service::HostService;
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Member, Role};
 use sanctum_domain::entities::room::{Room, RoomConfig, RoomId, RoomMode};
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::events::SanctumEvent;
+use sanctum_domain::ports::host_state::HostStatePort;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -46,19 +47,37 @@ impl TestHost {
     /// Start a host and receive a copy of every frame it decrypts.
     pub async fn start_with_tap() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Frame>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let host = Self::start_inner(RoomConfig::default(), HostLimits::default(), Some(tx)).await;
+        let host =
+            Self::start_inner(RoomConfig::default(), HostLimits::default(), Some(tx), None).await;
         (host, rx)
+    }
+
+    /// Start a persistent host that saves admissions and revocations to `store`.
+    pub async fn start_persistent(store: Arc<dyn HostStatePort>) -> Self {
+        Self::start_inner(
+            RoomConfig::default(),
+            HostLimits::default(),
+            None,
+            Some(store),
+        )
+        .await
+    }
+
+    /// Whether the host has stopped (e.g. after a failed save).
+    pub fn is_stopped(&self) -> bool {
+        self.shutdown.is_cancelled()
     }
 
     /// Start a host with custom room configuration and limits.
     pub async fn start_with(config: RoomConfig, limits: HostLimits) -> Self {
-        Self::start_inner(config, limits, None).await
+        Self::start_inner(config, limits, None, None).await
     }
 
     async fn start_inner(
         config: RoomConfig,
         limits: HostLimits,
         tap: Option<tokio::sync::mpsc::UnboundedSender<Frame>>,
+        store: Option<Arc<dyn HostStatePort>>,
     ) -> Self {
         let owner = Arc::new(IdentityAdapter::generate());
         let member = Member::new(
@@ -86,6 +105,10 @@ impl TestHost {
         .with_limits(limits);
         let host = match tap {
             Some(tap) => host.with_tap(tap),
+            None => host,
+        };
+        let host = match store {
+            Some(store) => host.with_persistence(store, AuthService::new()),
             None => host,
         };
         tokio::spawn(async move {

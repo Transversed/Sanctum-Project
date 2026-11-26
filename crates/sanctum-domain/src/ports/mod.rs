@@ -2,6 +2,8 @@
 
 /// Cryptographic operations.
 pub mod crypto;
+/// Persistent host state.
+pub mod host_state;
 /// Ed25519 identity (signing, verification).
 pub mod identity;
 /// Tor hidden services.

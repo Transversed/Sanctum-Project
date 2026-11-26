@@ -20,7 +20,7 @@ use sanctum_domain::entities::room::RoomId;
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::ports::identity::SignatureVerifier;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 /// Domain separator of the authentication signature.
 pub const AUTH_SIGNATURE_DOMAIN: &[u8] = b"SANCTUM-AUTH-v2";
@@ -148,7 +148,9 @@ fn fail(reason: &str) -> SanctumError {
 pub struct AuthService {
     /// nonce → timestamp of the challenge.
     used_nonces: HashMap<Vec<u8>, u64>,
-    used_invites: HashSet<[u8; 32]>,
+    /// Consumed invitations (id) → their expiry. Past it, the invitation is
+    /// refused as expired anyway, so the entry can be dropped.
+    used_invites: HashMap<[u8; 32], u64>,
     /// fingerprint → time of revocation: invitations issued at or before
     /// this time are refused.
     revoked: HashMap<Fingerprint, u64>,
@@ -160,10 +162,44 @@ impl AuthService {
     pub fn new() -> Self {
         Self {
             used_nonces: HashMap::new(),
-            used_invites: HashSet::new(),
+            used_invites: HashMap::new(),
             revoked: HashMap::new(),
             failures: VecDeque::new(),
         }
+    }
+
+    /// Rebuild the durable part of the state (persistent mode): revocations
+    /// and consumed invitations. Nonces and the failure window start empty.
+    pub fn restore(
+        revocations: Vec<(Fingerprint, u64)>,
+        used_invites: Vec<([u8; 32], u64)>,
+    ) -> Self {
+        Self {
+            revoked: revocations.into_iter().collect(),
+            used_invites: used_invites.into_iter().collect(),
+            ..Self::new()
+        }
+    }
+
+    /// Durable part of the state, for [`AuthService::restore`]: revocations,
+    /// and the consumed invitations that have not expired at `now`. Sorted,
+    /// so that saving the same state twice gives the same bytes.
+    #[allow(clippy::type_complexity)]
+    pub fn durable_state(&self, now: u64) -> (Vec<(Fingerprint, u64)>, Vec<([u8; 32], u64)>) {
+        let mut revocations: Vec<_> = self
+            .revoked
+            .iter()
+            .map(|(fp, t)| (fp.clone(), *t))
+            .collect();
+        revocations.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        let mut used: Vec<_> = self
+            .used_invites
+            .iter()
+            .filter(|(_, exp)| **exp >= now)
+            .map(|(id, exp)| (*id, *exp))
+            .collect();
+        used.sort();
+        (revocations, used)
     }
 
     /// Revoke `fingerprint` at `now`: every invitation issued for it until
@@ -260,7 +296,8 @@ impl AuthService {
         self.used_nonces
             .insert(challenge.nonce.clone(), challenge.timestamp);
         if let (Admission::Invited(_), Some(invite)) = (admission, &response.invite) {
-            self.used_invites.insert(invite_id(invite));
+            self.used_invites
+                .insert(invite_id(invite), invite.expires_at);
         }
         Ok(Authenticated {
             fingerprint,
@@ -303,7 +340,7 @@ impl AuthService {
         if invite.role == Role::Owner {
             return Err(fail("invitation cannot grant the owner role"));
         }
-        if self.used_invites.contains(&invite_id(invite)) {
+        if self.used_invites.contains_key(&invite_id(invite)) {
             return Err(fail("invitation already used"));
         }
         if let Some(revoked_at) = self.revoked.get(fingerprint) {
@@ -332,6 +369,7 @@ impl AuthService {
     fn purge(&mut self, now: u64) {
         self.used_nonces
             .retain(|_, ts| now.saturating_sub(*ts) <= NONCE_TTL_SECS);
+        self.used_invites.retain(|_, expires_at| *expires_at >= now);
         while self
             .failures
             .front()
@@ -611,6 +649,38 @@ mod tests {
         let c = svc.create_challenge(&fx.room_id, &HOST_KEY);
         let r = respond(&ALICE_PK, &H2, &c, Some(fresh));
         assert!(verify(&mut svc, &fx, &c, &H2, &r).is_ok());
+    }
+
+    #[test]
+    fn consumed_invitations_and_revocations_survive_a_restore() {
+        let fx = Fixture::new();
+        let mut svc = AuthService::new();
+        let now = unix_now();
+        let used = fx.invite_for(&ALICE_PK, now + 3600);
+        let c = svc.create_challenge(&fx.room_id, &HOST_KEY);
+        let r = respond(&ALICE_PK, &H1, &c, Some(used.clone()));
+        verify(&mut svc, &fx, &c, &H1, &r).unwrap();
+        svc.revoke(&toy_fp(&OWNER_PK), now); // any fingerprint will do
+        let (revocations, used_invites) = svc.durable_state(now);
+        assert_eq!(revocations.len(), 1);
+        assert_eq!(used_invites, vec![(invite_id(&used), now + 3600)]);
+
+        let mut restored = AuthService::restore(revocations.clone(), used_invites.clone());
+        assert_eq!(restored.durable_state(now), (revocations, used_invites));
+        let c = restored.create_challenge(&fx.room_id, &HOST_KEY);
+        let r = respond(&ALICE_PK, &H2, &c, Some(used));
+        let err = verify(&mut restored, &fx, &c, &H2, &r)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already used"), "{err}");
+    }
+
+    #[test]
+    fn expired_consumed_invitations_are_not_kept() {
+        let id = [7u8; 32];
+        let svc = AuthService::restore(vec![], vec![(id, 1_000)]);
+        assert_eq!(svc.durable_state(1_000).1, vec![(id, 1_000)]);
+        assert!(svc.durable_state(1_001).1.is_empty());
     }
 
     #[test]

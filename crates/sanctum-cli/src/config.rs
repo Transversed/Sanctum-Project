@@ -86,7 +86,7 @@ pub struct HostConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// Data directory.
+    /// Persistent mode: where room stores live (one directory per room).
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
     /// Max DB size in MiB.
@@ -159,7 +159,7 @@ fn default_max_connections() -> u16 {
     20
 }
 fn default_data_dir() -> String {
-    "~/.sanctum/data".into()
+    "~/.sanctum/hosts".into()
 }
 fn default_db_max_size() -> u32 {
     256

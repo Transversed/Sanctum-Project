@@ -1,0 +1,61 @@
+// Sanctum storage schema — persistent mode.
+//
+// These messages are never sent on the network: they are the plaintext of
+// sealed files (`SANCTUMS`, see sanctum-crypto/src/sealed.rs), which encrypt
+// and authenticate them. Field numbers are frozen once released; new fields
+// get new numbers so that an older file still decodes.
+
+syntax = "proto3";
+package sanctum.store;
+
+// Sealed kind 1 (host state), version 1.
+message HostStateV1 {
+    // Room
+    string room_id = 1;
+    string room_name = 2;
+    StoredRoomConfig config = 3;
+    repeated StoredMember members = 4;
+
+    // Admission state
+    repeated StoredRevocation revocations = 5;
+    repeated StoredUsedInvite used_invites = 6;
+
+    // Service keys (stable .onion and Noise host key)
+    bytes noise_private_key = 7;
+    bytes noise_public_key = 8;
+    string onion_key = 9;            // "ED25519-V3:<base64>", empty for --local rooms
+    uint32 hidden_service_port = 10;
+    uint32 local_port = 11;
+}
+
+message StoredRoomConfig {
+    uint32 max_members = 1;
+    uint32 backlog_max_messages = 2;
+    uint32 backlog_max_age_hours = 3;
+    uint32 message_padding_block = 4;
+}
+
+enum StoredRole {
+    STORED_ROLE_MEMBER = 0;
+    STORED_ROLE_ADMIN = 1;
+    STORED_ROLE_OWNER = 2;
+}
+
+message StoredMember {
+    string fingerprint = 1;
+    bytes identity_key = 2;          // Ed25519 public key
+    string display_alias = 3;
+    StoredRole role = 4;
+    uint64 joined_at = 5;
+    bool revoked = 6;
+}
+
+message StoredRevocation {
+    string fingerprint = 1;
+    uint64 revoked_at = 2;
+}
+
+message StoredUsedInvite {
+    bytes invite_id = 1;             // SHA-256 of the invitation
+    uint64 expires_at = 2;
+}
