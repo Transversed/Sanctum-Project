@@ -20,6 +20,14 @@ All notable changes to Sanctum. The format follows
   (owner + two members through SOCKS, encrypted sessions, 6/6 messages), with
   timings; runbook §6 adds a two-machine checklist.
 
+- **Sealed file format `SANCTUMS` v1** (`sanctum_crypto::sealed`), the encrypted
+  container of the upcoming persistent mode: random master key wrapped by
+  Argon2id, XChaCha20-Poly1305 body bound to the authenticated header, one HKDF
+  key per kind, bounded Argon2id parameters. Known-answer vectors from an
+  independent Python implementation, checked in CI.
+- `AeadCipher::XChaCha20Poly1305` (24-byte random nonces), tested against the
+  draft-irtf-cfrg-xchacha vectors.
+
 ### Fixed
 
 - A revoked member re-admitted by a new invitation was appended as a duplicate
