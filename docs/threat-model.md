@@ -73,6 +73,17 @@ refused. Sanctum never needs to run as root.
 **Mitigations.** The protocol version is bound by the Noise prologue
 (`SANCTUM-NOISE-NK-v2`); there is no plaintext mode and no negotiable cipher suite.
 
+### T8 — A removed member stays in, or comes back
+**Mitigations.** `/kick` (owner only, checked by the host against the
+authenticated identity) disconnects the member at once; the other clients receive
+`PeerLeft` and drop their pairwise session, so later messages are never encrypted
+for them. The host records the revocation time and refuses every invitation
+issued for that fingerprint before it (pending or replayed tokens included); only
+a newer owner-signed invitation re-admits them. **Residual:** a removed member
+keeps what it has already received; other members see the removal as an ordinary
+departure; revocations live in the host's memory and disappear with the session
+(in ephemeral mode the whole room does).
+
 ## 4. What is NOT protected (residual risks)
 
 - **Metadata visible to the host.** The host knows the room's members (fingerprints
@@ -112,6 +123,7 @@ coercion, and attacks requiring physical access to an unlocked running session.
 | Forward secrecy / post-compromise security | Double Ratchet (Signal rev. 4) | KAT vectors from an independent implementation |
 | Integrity | ChaCha20-Poly1305 with header + identities as AD | ratchet tampering tests |
 | Admission control | Channel-bound Ed25519 auth, owner-signed single-use invitations | `host_auth_test`, `auth_flow_test`, `e2e_negative_test` |
+| Removal | Owner-only `RevokeMember`, invitations older than the revocation refused | `host_revoke_test`, `kick_test` (real binary) |
 | Sender authenticity | Host-stamped sender + per-pair sessions | `host_relay_test`, `e2e_negative_test` |
 | Ephemerality | Zero disk writes | `check-no-disk-writes.sh` (CI, strace) |
 | Secrets at rest | Argon2id + ChaCha20-Poly1305, 0600 atomic files | `identity` tests |

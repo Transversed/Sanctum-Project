@@ -4,6 +4,36 @@ All notable changes to Sanctum. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`/kick <alias|fingerprint>`** (owner): removes a member from the running room.
+  The host handles `RoomControl/RevokeMember` (owner only), disconnects the member
+  with `ProtocolError{revoked}`, sends `PeerLeft` to the others and echoes the
+  command to the owner as acknowledgement.
+- **Invitation revocation.** Invitations carry a signed `issued_at`; the host
+  refuses every invitation issued for a removed member before the removal
+  (pending or replayed), and any invitation issued in the future. A newer
+  invitation re-admits the member.
+- **`scripts/tor-smoke-test.sh`**: end-to-end test over the real Tor network
+  (owner + two members through SOCKS, encrypted sessions, 6/6 messages), with
+  timings; runbook §6 adds a two-machine checklist.
+
+### Fixed
+
+- A revoked member re-admitted by a new invitation was appended as a duplicate
+  entry, and authorisation checks kept hitting the revoked one (`Room::add_member`
+  now replaces it).
+- A client whose connection ended (host gone, kick) kept running until the next
+  key press: the runtime waited for the blocked stdin reader on exit.
+
+### Compatibility
+
+- Invitations now sign `issued_at`: tokens issued by v0.1.1 are refused. They were
+  already bound to a host session, so restarting the host to upgrade voids them
+  anyway.
+
 ## [0.1.1] — 2026-11-25 — "Make it true"
 
 This release makes the binary deliver what the README promised. It closes every

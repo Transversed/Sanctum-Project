@@ -30,6 +30,7 @@ payload is encrypted with the Noise transport keys (the type byte is not).
 | 0x04 | `AuthResponse` | C→H |
 | 0x05 | `AuthResult` | H→C |
 | 0x10 | `RoomMessage` | C→H→C |
+| 0x11 | `RoomControl` (owner only) | C→H, echoed H→C |
 | 0x12 | `PeerReady` | H→C |
 | 0x13 | `PeerLeft` | H→C |
 | 0x20 | `RatchetKeyExchange` | C→H→C |
@@ -40,8 +41,9 @@ payload is encrypted with the Noise transport keys (the type byte is not).
 | 0xFE / 0xFD | Ping / Pong (empty) | both |
 | 0xFF | `ProtocolError` | both |
 
-Types 0x11 (`RoomControl`) and 0x30–0x32 (backlog) are defined for later versions
-and are not used in v0.1.1. 0x22 (`RequestBundle`) is retired.
+Types 0x30–0x32 (backlog) are defined for later versions and are not used yet;
+of `RoomControl` only the `RevokeMember` action is implemented (§3.9). 0x22
+(`RequestBundle`) is retired.
 
 ## 3. Connection lifecycle
 
@@ -86,15 +88,18 @@ An invitation is `base64url(JSON(InviteToken))`, issued by the owner
 
 ```
 InviteToken { room_id, onion_address, port, host_noise_pubkey,
-              inviter_fingerprint, invited_fingerprint, role, expires_at, signature }
+              inviter_fingerprint, invited_fingerprint, role, expires_at, issued_at, signature }
 signature = Ed25519(owner_sk, "SANCTUM-INVITE-v2" ‖ L(room_id) ‖ L(onion) ‖ L(port)
-                    ‖ L(host_noise_pubkey) ‖ L(inviter) ‖ L(invited) ‖ L(role) ‖ L(expires_at))
+                    ‖ L(host_noise_pubkey) ‖ L(inviter) ‖ L(invited) ‖ L(role)
+                    ‖ L(expires_at) ‖ L(issued_at))
 ```
 
 The host accepts it only if: it is for this room and this host session (Noise
 key), the inviter is the owner and the signature verifies with the owner's key,
-it has not expired, the invitee is the proven fingerprint, the role is not
-`Owner`, and it has never been used. The member is then added with its proven
+it has not expired, it was not issued in the future (beyond the 120 s clock
+tolerance), the invitee is the proven fingerprint, the role is not `Owner`, it
+has never been used, and it was issued **after** the last revocation of that
+fingerprint (§3.9). The member is then added with its proven
 public key. Members reconnect without an invitation.
 
 ### 3.4 Prekey bundles
@@ -171,6 +176,26 @@ connection.
 `SHA-512("SANCTUM-SAFETY-v2" ‖ L(fp_a) ‖ L(pk_a) ‖ L(fp_b) ‖ L(pk_b))` (pairs sorted by
 fingerprint). Both members see the same number; comparing it out of band detects a
 host that would have introduced a fake member or keys.
+
+### 3.9 Removing a member (`RoomControl`)
+
+```
+owner→H  RoomControl { revoke_member: RevokeMember { fingerprint } }
+H→target ProtocolError { code: "revoked" }, then the connection is closed
+H→others PeerLeft { fingerprint }
+H→owner  the same RoomControl, echoed as acknowledgement
+```
+
+Only the authenticated owner may send `RoomControl`; anyone else gets
+`ProtocolError { code: "revoke_failed" }`, as does the owner targeting itself.
+Actions other than `RevokeMember` get `ProtocolError { code: "unsupported" }`.
+
+The host marks the member revoked and records the revocation time `t` for that
+fingerprint: every invitation with `issued_at ≤ t` is refused afterwards, so a
+pending or replayed invitation cannot bring the member back. A new invitation
+issued later (at least one second after, the resolution of `issued_at`)
+re-admits it. Revocations live in the host's memory, like everything else in
+ephemeral mode.
 
 ## 4. Host-side Tor control
 
