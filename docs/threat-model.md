@@ -84,6 +84,26 @@ keeps what it has already received; other members see the removal as an ordinary
 departure; revocations live in the host's memory and disappear with the session
 (in ephemeral mode the whole room does).
 
+### T9 — Persistent host: its disk, its address, its operator
+**Mitigations.** The room state is one sealed file (Argon2id-wrapped master key,
+XChaCha20-Poly1305 bound to an authenticated header; directory 0700, file 0600);
+CI runs a persistent host under `strace` and checks that it writes nothing
+outside that store and nothing in clear (I6). The host holds **no private key of
+the owner** (headless host): seizing it does not give the power to invite or
+remove members. Admissions and revocations are saved *before* they are
+confirmed and a failed save stops the host, so a restart never resurrects a
+confirmed removal. One host per room (instance lock). Tor never writes the onion
+key (no `HiddenServiceDir`, no `Detach`); `host start` does not print the
+address, so it does not end up in system journals. The store passphrase is typed
+at start by default. **Residual:** with the passphrase (or the systemd
+credential, or a RAM capture or snapshot of the running VM) an adversary reads
+the member list, public keys, aliases, revocations and consumed invitations,
+never message content. An unattended start (systemd credential) keeps the
+secret on the same machine: a hosting provider controlling the vTPM can obtain
+it. The stable `.onion` is a long-lived target that can be probed and flooded
+(Tor client authorization is planned). Restoring an old backup brings back the
+state of that time, including removed members. Deletion on disk is not secure.
+
 ## 4. What is NOT protected (residual risks)
 
 - **Metadata visible to the host.** The host knows the room's members (fingerprints
@@ -99,11 +119,10 @@ departure; revocations live in the host's memory and disappear with the session
   (`mlock` is *not implemented*) and may reach swap; disable swap and core dumps on
   sensitive machines. A compromised member device reveals that member's messages.
 - **Clock.** Displayed times come from the sender's clock.
-- **Persistent rooms** (v0.2, in progress) keep the room's membership on the
-  host's disk, sealed (Argon2id + XChaCha20-Poly1305): a copy of the disk alone
-  reveals file sizes and dates; with the store passphrase, the member list and
-  the revocations. The stable `.onion` is a long-lived target. Deletion on disk
-  is not secure (journaling, SSD, snapshots).
+- **Persistent rooms** keep the room's membership on the host's disk (sealed, see
+  T9): metadata at rest that ephemeral rooms never write. Offline delivery
+  (milestone B) is not implemented: messages to a member who is offline are not
+  kept.
 - **No external audit yet.**
 
 ## 5. Explicit assumptions
@@ -128,6 +147,7 @@ coercion, and attacks requiring physical access to an unlocked running session.
 | Integrity | ChaCha20-Poly1305 with header + identities as AD | ratchet tampering tests |
 | Admission control | Channel-bound Ed25519 auth, owner-signed single-use invitations | `host_auth_test`, `auth_flow_test`, `e2e_negative_test` |
 | Removal | Owner-only `RevokeMember`, invitations older than the revocation refused | `host_revoke_test`, `kick_test` (real binary) |
+| Persistent state at rest | Sealed store, save before confirm, fail-stop, no owner private key on the host | `host_store` tests, `host_persistence_test`, `persistent_host_test` (kill -9 and restart), `check-persistent-at-rest.sh` (CI, strace) |
 | Sender authenticity | Host-stamped sender + per-pair sessions | `host_relay_test`, `e2e_negative_test` |
 | Ephemerality | Zero disk writes | `check-no-disk-writes.sh` (CI, strace) |
 | Secrets at rest | Argon2id + ChaCha20-Poly1305, 0600 atomic files | `identity` tests |

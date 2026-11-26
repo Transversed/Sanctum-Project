@@ -13,9 +13,12 @@ output, known-answer vectors, fuzzing, and a CI that checks all of it. See the
 
 ## v0.2 — Usable daily
 
-- **Persistent mode**: encrypted store (keys and backlog), stable `.onion`
-  (persisted onion key), strict retention limits, and the corresponding storage
-  ports wired into the host.
+- **Persistent mode** (decisions in `docs/architecture.md` §6):
+  - ✅ milestone A — durable, headless room: sealed store, stable `.onion`,
+    members and revocations kept across restarts, systemd unit, I6 checked in CI;
+  - milestone B — offline delivery: per-recipient queues on the host with strict
+    retention, sealed client state (keys and ratchet sessions, opt-in), roster
+    and `MemberRemoved` messages, session collisions and SPK rotation.
 - **Sender Keys** for group messages (O(1) encryption per message instead of O(n)),
   with key rotation when membership changes.
 - Membership management: admin role semantics (`/kick` and invitation

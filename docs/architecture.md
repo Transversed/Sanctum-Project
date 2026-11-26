@@ -32,7 +32,9 @@ without metadata.
 `SignatureVerifier` and `Signer` (Ed25519, implemented by
 `infra::identity::{Ed25519Verifier, IdentityAdapter}`) are used by the
 authentication service and the E2E engine; `UiPort` and `CryptoPort` have
-implementations. `StoragePort`, `TransportPort` and `TorPort` are declared but not
+implementations. `HostStatePort` (persistent rooms) is implemented by
+`infra::host_store::SealedHostStore` and used by the host listener; tests plug
+in-memory and failing stores. `TransportPort` and `TorPort` are declared but not
 implemented yet: the host and the CLI use the concrete adapters directly. Making
 them the real seams is a prerequisite of multi-transport support (see roadmap).
 
@@ -54,6 +56,19 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
    target's connection task (each connected client has a cancellation token).
 4. With `--chat`, the owner joins its own room as a regular client and can issue
    invitations with `/invite` and remove members with `/kick`.
+
+### Persistent host (`sanctum host create <room> --mode persistent --owner-key <pk>`, `sanctum host start <room_id>`)
+
+Headless: the host never loads an identity. `create` builds the room around the
+owner's **public** key, generates the Noise key, asks Tor for a new onion key
+(`ADD_ONION NEW:ED25519-V3`, without `DiscardPK`) and seals everything in
+`~/.sanctum/hosts/<room_id>/state.sanctum` under the store passphrase. `start`
+unlocks it (one Argon2id run), takes the instance lock, binds the same loopback
+port, gives Tor back the stored key (`ADD_ONION ED25519-V3:<key>`), restores the
+room and the `AuthService` (revocations, consumed invitations) and serves through
+`HostListener::with_persistence`. The owner joins from their own machine with a
+token they sign themselves (`sanctum room invite <own fingerprint> …`); when the
+host answers `role: Owner`, `join` enables `/invite` and `/kick`.
 
 ### Member (`sanctum join <invite>`)
 
@@ -106,6 +121,8 @@ ED25519-V3:<key>` at each start (no `HiddenServiceDir`, no `Detach`).
 | I3 | The sender of a routed frame is the authenticated peer | `host_listener::route_to_recipient` |
 | I4 | Zero disk writes in ephemeral mode | `scripts/check-no-disk-writes.sh` |
 | I5 | Remote text is sanitized before display | `sanctum_app::sanitize` |
+| I6 | A persistent host writes nothing in clear, and nothing outside its room store | `SealedHostStore`; `scripts/check-persistent-at-rest.sh` (strace) |
+| I7 | An admission or a revocation is confirmed only once saved; a failed save stops the host | `host_listener::persist`; `host_persistence_test` |
 
 ## 5. Tests
 
@@ -117,3 +134,21 @@ ED25519-V3:<key>` at each start (no `HiddenServiceDir`, no `Detach`).
 - End-to-end tests driving the real `sanctum` binary (`sanctum-cli/tests`), including
   `host_is_blind` and negative scenarios.
 - Fuzzing (`fuzz/`, nightly) and deterministic random-input tests (stable).
+
+## 6. Decisions — persistent mode (v0.2)
+
+Validated by the project owner on 2026-11-26 (D1–D4) or applied by default
+(D5–D10).
+
+| # | Decision | Why |
+|---|----------|-----|
+| D1 | Two milestones: **A** durable room (done), **B** offline delivery; no message history on clients | A is host-only and useful at once; B changes the protocol and the clients; history contradicts OPSEC |
+| D2 | **Headless host**: only the owner's public key on the host | The 24/7 machine is the most exposed one; seizing it must not give the owner's powers |
+| D3 | **Sealed files, no SQLite** (protobuf schema, `SANCTUMS` container) | Small state; no embedded C engine, no free pages or WAL with old data, no clear structure |
+| D4 | Store passphrase **typed at start** by default; systemd credential as a documented option; environment variable for tests | Only the typed passphrase keeps a disk copy useless; unattended restarts are a conscious trade-off |
+| D5 | Onion and Noise keys persisted in the store and handed to Tor at each start; Tor client authorization later (v0.2.x) | Stable address without Tor ever writing the key; client authorization needs every member's Tor configured |
+| D6 | Offline delivery: one queue per recipient on the host, sessions initiated towards offline members, persist-then-ack (B) | Signal-like store-and-forward without the host holding any message key |
+| D7 | Hard-coded retention ceilings, configuration may only lower them; a full queue refuses new messages (`backlog_full`) rather than dropping old ones (B) | A hole in a ratchet chain breaks the session |
+| D8 | Client state (keys, sessions, pinned peers, room cards) sealed and opt-in per room, no message content (B) | Persisted ratchet states weaken forward secrecy against device seizure |
+| D9 | New X25519 keys signed by the same Ed25519 key: accepted with a notice, verification kept; a new Ed25519 key is a new identity | Safety numbers derive from Ed25519 keys |
+| D10 | One room per host process; the store layout (`hosts/<room_id>/`) is ready for more | Keeps v0.2 simple |

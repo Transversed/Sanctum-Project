@@ -1,0 +1,67 @@
+# Sanctum — persistent room as a systemd service (one instance per room id).
+#
+#   1. create the room once, as the `sanctum` user (see docs/runbook.md §9);
+#   2. encrypt the store passphrase into a credential (as administrator):
+#        systemd-ask-password -n "Store passphrase: " \
+#          | systemd-creds encrypt --name=sanctum-host-passphrase - /etc/sanctum/<room_id>.cred
+#   3. systemctl enable --now sanctum-host@<room_id>
+#
+# Without step 2, start the room by hand after each boot instead
+# (`sanctum host start <room_id>` in a session of the `sanctum` user): a copy
+# of the disk alone then reveals nothing. With a credential, the passphrase
+# is sealed by the TPM if there is one, otherwise by a root-only key on the
+# same disk: this trades confidentiality at rest for unattended restarts.
+#
+# Check the hardening with: systemd-analyze security sanctum-host@<room_id>
+
+[Unit]
+Description=Sanctum persistent room %i
+Wants=network-online.target tor.service
+After=network-online.target tor.service
+
+[Service]
+Type=simple
+User=sanctum
+Group=sanctum
+# Read access to Tor's control cookie (Debian/Ubuntu group; `tor` elsewhere).
+SupplementaryGroups=debian-tor
+Environment=HOME=/var/lib/sanctum
+StateDirectory=sanctum
+StateDirectoryMode=0700
+UMask=0077
+LoadCredentialEncrypted=sanctum-host-passphrase:/etc/sanctum/%i.cred
+ExecStart=/usr/local/bin/sanctum --no-banner host start %i
+# A failed save stops the host with an error: retry later (disk full…).
+Restart=on-failure
+RestartSec=30
+
+# Never root; no privileges to gain.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Read-only system, no home directories, private /tmp and devices.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No core dumps (keys live in memory).
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
