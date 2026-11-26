@@ -1,4 +1,4 @@
-# Sanctum — Runbook (v0.1.1)
+# Sanctum — Runbook (v0.1.1 + mode persistant, jalon A)
 
 Guide opérationnel : installer, utiliser et diagnostiquer Sanctum.
 **Ne lancez jamais `sanctum` avec `sudo`.**
@@ -107,7 +107,7 @@ Hors du chat (autre terminal, même identité owner) :
 
 ```bash
 sanctum room invite <fingerprint> --room-onion <onion> --room-port <port> \
-    --room-id <room_id> --host-key <host_key>
+    --room-id <room_id> --host-key=<host_key>
 ```
 
 (la commande exacte est affichée au lancement de l'hôte).
@@ -214,3 +214,82 @@ fingerprint, ni alias, ni adresse, ni contenu.
 - Système à jour, Tor à jour, aucun autre service exposé.
 - Vérifier régulièrement que le mode éphémère n'écrit rien :
   `./scripts/check-no-disk-writes.sh target/release/sanctum`.
+
+## 9. Héberger une room persistante sur une VM 24/7
+
+Les commandes d'administration (création d'utilisateur, `systemctl`,
+`systemd-creds`) se font en administrateur ; **`sanctum` lui-même ne tourne
+jamais en root**, ni avec `sudo`.
+
+### Préparer la machine
+
+1. Chiffrement du disque de la VM (LUKS) si l'hébergeur le permet, swap désactivé
+   ou chiffré, core dumps désactivés.
+2. Tor installé et configuré comme en §1 (`ControlPort 9051`,
+   `CookieAuthentication 1`, `CookieAuthFileGroupReadable 1`).
+3. Un utilisateur système dédié, membre du groupe de Tor :
+   `useradd --system --home-dir /var/lib/sanctum --create-home --shell /usr/sbin/nologin --groups debian-tor sanctum`
+   (`tor` à la place de `debian-tor` hors Debian/Ubuntu).
+4. Le binaire dans `/usr/local/bin/sanctum` (compilé en `--release`).
+
+### Créer la room (une fois)
+
+Dans une session de l'utilisateur `sanctum` (`HOME=/var/lib/sanctum`) :
+
+```bash
+sanctum host create ops --mode persistent --owner-key <clé publique de l'owner>
+```
+
+Notez l'id de la room et la commande `sanctum room invite …` affichée, que
+l'owner exécutera sur **sa** machine. Arrêtez ensuite l'hôte (Ctrl-C).
+
+### Démarrer après chaque redémarrage
+
+- **Recommandé (rien d'exploitable sur le disque seul)** : ouvrir une session
+  `sanctum` et lancer `sanctum host start <room_id>` dans `tmux` ou `screen` ;
+  la passphrase est saisie à la main.
+- **Sans intervention** : l'unité fournie
+  [`contrib/systemd/sanctum-host@.service`](../contrib/systemd/sanctum-host@.service)
+  et un credential chiffré :
+
+  ```bash
+  install -d -m 0700 /etc/sanctum
+  systemd-ask-password -n "Passphrase du magasin : " \
+    | systemd-creds encrypt --name=sanctum-host-passphrase - /etc/sanctum/<room_id>.cred
+  cp contrib/systemd/sanctum-host@.service /etc/systemd/system/
+  systemctl daemon-reload && systemctl enable --now sanctum-host@<room_id>
+  ```
+
+  Avec un TPM, le credential lui est scellé ; sans TPM, il est chiffré par une
+  clé lisible par root sur le même disque. Chez un hébergeur, le vTPM est sous son
+  contrôle : ce mode échange la confidentialité au repos contre la disponibilité.
+
+L'unité est durcie (système en lecture seule, pas de capacités, filtre d'appels
+système, pas de core dump) ; vérifiez avec `systemd-analyze security
+sanctum-host@<room_id>`. `host start` n'écrit pas l'adresse `.onion` dans le
+journal ; `journalctl -u sanctum-host@<room_id>` ne contient ni fingerprint ni
+adresse.
+
+### Sauvegarde et restauration
+
+- Le fichier `/var/lib/sanctum/.sanctum/hosts/<room_id>/state.sanctum` est scellé
+  et remplacé atomiquement : on peut le copier pendant que l'hôte tourne.
+- **Restaurer une ancienne sauvegarde ramène l'état de l'époque** : un membre
+  retiré depuis redevient membre, une invitation consommée redevient utilisable.
+  Après une restauration, refaites les `/kick` nécessaires.
+- Sans la passphrase, une sauvegarde est inutilisable : conservez-la à part.
+
+### Ce que voit un attaquant
+
+| Il obtient… | Il apprend… |
+|---|---|
+| une copie du disque, sans la passphrase | la taille et la date du fichier d'état |
+| la copie **et** la passphrase (ou le credential, ou la RAM) | la liste des membres (fingerprints, clés publiques, alias), les révocations, les invitations consommées ; jamais le contenu des messages |
+| un snapshot de la VM en marche | tout ce que l'hôte sait à cet instant, clé du magasin comprise |
+
+Supprimer une room (`sanctum host delete <room_id> --yes`) n'efface rien de façon
+sûre sur un disque journalisé, un SSD ou dans des snapshots : comptez sur le
+chiffrement du disque.
+
+Vérification en CI (et sur votre machine) que l'hôte persistant n'écrit rien en
+clair ni hors de son magasin : `./scripts/check-persistent-at-rest.sh target/release/sanctum`.

@@ -195,7 +195,8 @@ async fn connect_tor(
 /// The command printed for someone (the owner included) to get a token.
 fn invite_command(who: &str, target: &InviteTarget) -> String {
     format!(
-        "sanctum room invite {who} --room-onion {} --room-port {} --room-id {} --host-key {}",
+        // `=`: the base64url host key may start with '-'.
+        "sanctum room invite {who} --room-onion {} --room-port {} --room-id {} --host-key={}",
         target.onion_address,
         target.port,
         target.room_id.as_str(),
@@ -692,6 +693,21 @@ fn run_delete(data_dir: &Path, room_id: &str, yes: bool) -> Result<(), BoxError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_printed_invite_command_survives_a_key_starting_with_a_dash() {
+        let mut key = vec![0xF8u8; 32]; // base64url "-…"
+        key[1] = 1;
+        assert!(invite_codec::encode_host_key(&key).starts_with('-'));
+        let target = InviteTarget {
+            room_id: RoomId::new(),
+            onion_address: "127.0.0.1".into(),
+            port: 9738,
+            host_noise_pubkey: key,
+        };
+        let cmd = invite_command("AB", &target);
+        assert!(cmd.contains(" --host-key=-"), "{cmd}");
+    }
 
     #[test]
     fn both_modes_parse() {

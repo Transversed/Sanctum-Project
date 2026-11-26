@@ -95,7 +95,7 @@ jobs:
       - run: ./scripts/check-logging.sh
 
   no-disk-writes:
-    name: Ephemeral zero-disk (I4)
+    name: Disk writes (I4 ephemeral, I6 persistent)
     runs-on: ubuntu-latest
     needs: check
     steps:
@@ -106,3 +106,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p sanctum-cli
       - run: ./scripts/check-no-disk-writes.sh --local target/debug/sanctum
+      - name: Persistent host writes only its sealed store (I6)
+        run: ./scripts/check-persistent-at-rest.sh target/debug/sanctum

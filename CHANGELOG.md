@@ -31,6 +31,12 @@ All notable changes to Sanctum. The format follows
   host. Instance lock per room; the store passphrase comes from a systemd
   credential (`sanctum-host-passphrase`), `SANCTUM_HOST_PASSPHRASE` (tests) or
   a prompt. `host start` does not print the address unless `--show-address`.
+- `contrib/systemd/sanctum-host@.service` (hardened unit, encrypted credential)
+  and runbook §9: hosting a persistent room on a 24/7 VM, backups, what an
+  attacker learns.
+- CI checks invariant I6 (`scripts/check-persistent-at-rest.sh`): a persistent
+  host under `strace` writes only its sealed store, nothing in clear, and an
+  admission survives a restart.
 - Tor: `create_persistent_hidden_service` (no `DiscardPK`, key never written by
   Tor); onion keys are validated before being sent to the control port.
 - `sanctum identity show` prints the public key.
@@ -52,6 +58,9 @@ All notable changes to Sanctum. The format follows
 
 ### Fixed
 
+- The printed `sanctum room invite … --host-key <key>` command broke when the
+  base64url key started with `-` (taken for an option): it is now printed as
+  `--host-key=<key>`.
 - A revoked member re-admitted by a new invitation was appended as a duplicate
   entry, and authorisation checks kept hitting the revoked one (`Room::add_member`
   now replaces it).
