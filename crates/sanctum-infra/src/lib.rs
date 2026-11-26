@@ -1,7 +1,7 @@
 //! Sanctum Infra — infrastructure adapters.
 //!
 //! Concrete implementations of domain ports:
-//! codec, storage (RAM + SQLite), identity (Ed25519),
+//! codec, identity (Ed25519),
 //! transport (framing), Tor control, and terminal renderer.
 
 #![forbid(unsafe_code)]
@@ -14,12 +14,6 @@ use sanctum_domain::errors::SanctumError;
 
 /// Wire framing codec: length-prefixed messages.
 pub mod codec;
-
-/// In-memory storage adapter (ephemeral mode).
-pub mod storage_memory;
-
-/// SQLite encrypted storage adapter (persistent mode).
-pub mod storage_sqlite;
 
 /// Ed25519 identity adapter (sign/verify, fingerprint derivation).
 pub mod identity;

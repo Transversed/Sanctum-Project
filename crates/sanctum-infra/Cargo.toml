@@ -29,7 +29,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 # Storage
-rusqlite.workspace = true
 
 # Terminal
 crossterm.workspace = true

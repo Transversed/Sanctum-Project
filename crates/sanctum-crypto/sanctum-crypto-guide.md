@@ -1,6 +1,7 @@
 > [!NOTE]
 > Guide rédigé pendant les sprints v0.1.0-dev. Certaines sections sont dépassées
-> (protocole v1, « PGP », authentification sans signature, E2E non câblé).
+> (protocole v1, « PGP », authentification sans signature, E2E non câblé,
+> stockage SQLite retiré en v0.2).
 > Référence à jour : [`docs/architecture.md`](../../docs/architecture.md) et
 > [`docs/protocol.md`](../../docs/protocol.md).
 

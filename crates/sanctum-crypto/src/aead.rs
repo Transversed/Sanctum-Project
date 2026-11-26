@@ -1,17 +1,14 @@
-//! AEAD encryption: AES-256-GCM (storage) and ChaCha20-Poly1305 (messages).
+//! AEAD encryption: ChaCha20-Poly1305 (messages, identity at rest).
 
-use aes_gcm::{
+use chacha20poly1305::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce as AesNonce,
+    ChaCha20Poly1305, Nonce as ChachaNonce,
 };
-use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChachaNonce};
 use sanctum_domain::SanctumError;
 
 /// Which AEAD cipher to use.
 #[derive(Debug, Clone, Copy)]
 pub enum AeadCipher {
-    /// AES-256-GCM — used for storage encryption (hardware-accelerated).
-    Aes256Gcm,
     /// ChaCha20-Poly1305 — used for message encryption (constant-time, no AES-NI needed).
     ChaCha20Poly1305,
 }
@@ -43,20 +40,6 @@ pub fn encrypt(
     }
 
     match cipher {
-        AeadCipher::Aes256Gcm => {
-            let cipher = Aes256Gcm::new_from_slice(key)
-                .map_err(|_| SanctumError::MalformedMessage("invalid AES key".into()))?;
-            let nonce = AesNonce::from_slice(nonce);
-            cipher
-                .encrypt(
-                    nonce,
-                    aes_gcm::aead::Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|_| SanctumError::DecryptionFailed)
-        }
         AeadCipher::ChaCha20Poly1305 => {
             let cipher = ChaCha20Poly1305::new_from_slice(key)
                 .map_err(|_| SanctumError::MalformedMessage("invalid ChaCha key".into()))?;
@@ -97,20 +80,6 @@ pub fn decrypt(
     }
 
     match cipher {
-        AeadCipher::Aes256Gcm => {
-            let cipher = Aes256Gcm::new_from_slice(key)
-                .map_err(|_| SanctumError::MalformedMessage("invalid AES key".into()))?;
-            let nonce = AesNonce::from_slice(nonce);
-            cipher
-                .decrypt(
-                    nonce,
-                    aes_gcm::aead::Payload {
-                        msg: ciphertext,
-                        aad,
-                    },
-                )
-                .map_err(|_| SanctumError::DecryptionFailed)
-        }
         AeadCipher::ChaCha20Poly1305 => {
             let cipher = ChaCha20Poly1305::new_from_slice(key)
                 .map_err(|_| SanctumError::MalformedMessage("invalid ChaCha key".into()))?;
@@ -147,18 +116,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aes_gcm_round_trip() {
-        let key = generate_key();
-        let nonce = generate_nonce();
-        let plaintext = b"Hello Sanctum";
-        let aad = b"room_id:abc123";
-
-        let ct = encrypt(AeadCipher::Aes256Gcm, &key, &nonce, plaintext, aad).unwrap();
-        let pt = decrypt(AeadCipher::Aes256Gcm, &key, &nonce, &ct, aad).unwrap();
-        assert_eq!(pt, plaintext);
-    }
-
-    #[test]
     fn chacha_round_trip() {
         let key = generate_key();
         let nonce = generate_nonce();
@@ -177,8 +134,8 @@ mod tests {
         let nonce = generate_nonce();
         let plaintext = b"secret";
 
-        let ct = encrypt(AeadCipher::Aes256Gcm, &key, &nonce, plaintext, b"").unwrap();
-        let result = decrypt(AeadCipher::Aes256Gcm, &wrong_key, &nonce, &ct, b"");
+        let ct = encrypt(AeadCipher::ChaCha20Poly1305, &key, &nonce, plaintext, b"").unwrap();
+        let result = decrypt(AeadCipher::ChaCha20Poly1305, &wrong_key, &nonce, &ct, b"");
         assert!(result.is_err());
     }
 
@@ -188,9 +145,9 @@ mod tests {
         let nonce = generate_nonce();
         let plaintext = b"secret";
 
-        let mut ct = encrypt(AeadCipher::Aes256Gcm, &key, &nonce, plaintext, b"").unwrap();
+        let mut ct = encrypt(AeadCipher::ChaCha20Poly1305, &key, &nonce, plaintext, b"").unwrap();
         ct[0] ^= 0xFF; // flip a byte
-        let result = decrypt(AeadCipher::Aes256Gcm, &key, &nonce, &ct, b"");
+        let result = decrypt(AeadCipher::ChaCha20Poly1305, &key, &nonce, &ct, b"");
         assert!(result.is_err());
     }
 
@@ -200,20 +157,27 @@ mod tests {
         let nonce = generate_nonce();
         let plaintext = b"secret";
 
-        let ct = encrypt(AeadCipher::Aes256Gcm, &key, &nonce, plaintext, b"aad1").unwrap();
-        let result = decrypt(AeadCipher::Aes256Gcm, &key, &nonce, &ct, b"aad2");
+        let ct = encrypt(
+            AeadCipher::ChaCha20Poly1305,
+            &key,
+            &nonce,
+            plaintext,
+            b"aad1",
+        )
+        .unwrap();
+        let result = decrypt(AeadCipher::ChaCha20Poly1305, &key, &nonce, &ct, b"aad2");
         assert!(result.is_err());
     }
 
     #[test]
     fn invalid_key_length_rejected() {
         let nonce = generate_nonce();
-        assert!(encrypt(AeadCipher::Aes256Gcm, &[0u8; 16], &nonce, b"x", b"").is_err());
+        assert!(encrypt(AeadCipher::ChaCha20Poly1305, &[0u8; 16], &nonce, b"x", b"").is_err());
     }
 
     #[test]
     fn invalid_nonce_length_rejected() {
         let key = generate_key();
-        assert!(encrypt(AeadCipher::Aes256Gcm, &key, &[0u8; 8], b"x", b"").is_err());
+        assert!(encrypt(AeadCipher::ChaCha20Poly1305, &key, &[0u8; 8], b"x", b"").is_err());
     }
 }

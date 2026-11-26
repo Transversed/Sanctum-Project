@@ -28,6 +28,15 @@ All notable changes to Sanctum. The format follows
 - A client whose connection ended (host gone, kick) kept running until the next
   key press: the runtime waited for the blocked stdin reader on exit.
 
+### Removed
+
+- `rusqlite` (embedded SQLite), the unused `storage_sqlite` / `storage_memory`
+  adapters, the `StoragePort` trait they implemented and their tests. The
+  persistent mode will store sealed encrypted files instead (no SQL engine, no
+  plaintext structure on disk).
+- AES-256-GCM from `sanctum-crypto::aead` (never used: everything is
+  ChaCha20-Poly1305). `aes-gcm` remains only as a transitive dependency of `snow`.
+
 ### Compatibility
 
 - Invitations now sign `issued_at`: tokens issued by v0.1.1 are refused. They were
