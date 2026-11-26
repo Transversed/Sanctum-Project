@@ -18,7 +18,7 @@ use sanctum_infra::codec::{self, message_types};
 use sanctum_infra::identity::{Ed25519Verifier, IdentityAdapter};
 use sanctum_infra::invite_codec::{self, InviteTarget};
 use sanctum_infra::noise_transport::NoiseTransport;
-use sanctum_infra::proto_codec::{self, WireMessage};
+use sanctum_infra::proto_codec::{self, pb, WireMessage};
 use sanctum_infra::room_crypto::{KeyExchangeOutcome, RoomCrypto};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -284,6 +284,25 @@ async fn on_frame(
             }
             refresh(scr, st, cfg);
         }
+        WireMessage::RoomControl(rc) => {
+            if let Some(pb::room_control::Action::RevokeMember(r)) = rc.action {
+                let who = alias_of(st, &r.fingerprint);
+                sys(
+                    scr,
+                    st,
+                    &format!(
+                        "✓ {who} retiré de la room (ses invitations antérieures sont révoquées)"
+                    ),
+                );
+            }
+        }
+        WireMessage::ProtocolError(e) => {
+            let text = match e.code.as_str() {
+                "revoked" => "✗ vous avez été retiré de la room par son owner".to_string(),
+                _ => format!("✗ {}", e.message),
+            };
+            sys(scr, st, &text);
+        }
         WireMessage::OPKDepleted(_) => {
             let refill = st.crypto.refresh_opks();
             send(transport, &refill).await?;
@@ -323,6 +342,7 @@ async fn on_line(
                 "/who                      membres et état du chiffrement",
                 "/verify <alias|fp>        safety number à comparer hors bande",
                 "/invite <fp> [heures]     (owner) émettre une invitation signée",
+                "/kick <alias|fp>          (owner) retirer un membre, révoquer ses invitations",
                 "/exit                     quitter",
             ] {
                 sys(scr, st, line);
@@ -353,6 +373,17 @@ async fn on_line(
         },
         "/invite" => match invite_command(text, cfg.inviter.as_ref()) {
             Ok(lines) => lines.iter().for_each(|l| sys(scr, st, l)),
+            Err(e) => sys(scr, st, &format!("✗ {e}")),
+        },
+        "/kick" => match kick_target(text, &st.peers, cfg.inviter.is_some()) {
+            Ok(fp) => {
+                let msg = WireMessage::RoomControl(pb::RoomControl {
+                    action: Some(pb::room_control::Action::RevokeMember(pb::RevokeMember {
+                        fingerprint: fp,
+                    })),
+                });
+                send(transport, &msg).await?;
+            }
             Err(e) => sys(scr, st, &format!("✗ {e}")),
         },
         c if c.starts_with('/') => sys(scr, st, &format!("✗ commande inconnue {c} (/help)")),
@@ -433,6 +464,28 @@ fn verify_command(text: &str, st: &ChatState) -> Result<Vec<String>, String> {
         format!("  {number}"),
         "comparez-le hors bande (de vive voix) : s'il diffère, quelqu'un s'interpose.".into(),
     ])
+}
+
+/// `/kick <alias|fingerprint>`: a connected member (alias or prefix), or a
+/// full fingerprint (e.g. someone invited who has not joined yet).
+fn kick_target(
+    text: &str,
+    peers: &BTreeMap<String, String>,
+    is_owner: bool,
+) -> Result<String, String> {
+    if !is_owner {
+        return Err("only the room owner can remove members".into());
+    }
+    let who = text
+        .split_whitespace()
+        .nth(1)
+        .ok_or("usage: /kick <alias|fingerprint>")?;
+    if let Some(fp) = find_peer(peers, who) {
+        return Ok(fp);
+    }
+    Fingerprint::new(who.to_ascii_uppercase())
+        .map(|fp| fp.as_str().to_string())
+        .map_err(|_| format!("aucun membre « {who} » (alias, préfixe ou fingerprint complet)"))
 }
 
 /// Find a connected peer by exact alias or fingerprint prefix (≥ 4 chars).
@@ -729,6 +782,27 @@ mod tests {
         assert!(invite_command(&format!("/invite {fp} 0"), Some(&iss)).is_err());
         assert!(invite_command(&format!("/invite {fp} 9999"), Some(&iss)).is_err());
         assert!(invite_command(&format!("/invite {fp}"), None).is_err());
+    }
+
+    #[test]
+    fn kick_target_resolution() {
+        let mut peers = BTreeMap::new();
+        peers.insert("ABCD1111".repeat(5), "alice".to_string());
+        assert_eq!(
+            kick_target("/kick alice", &peers, true),
+            Ok("ABCD1111".repeat(5))
+        );
+        let pending = "ef01".repeat(10);
+        assert_eq!(
+            kick_target(&format!("/kick {pending}"), &peers, true),
+            Ok(pending.to_ascii_uppercase())
+        );
+        assert!(kick_target("/kick nobody", &peers, true).is_err());
+        assert!(kick_target("/kick", &peers, true).is_err());
+        assert!(
+            kick_target("/kick alice", &peers, false).is_err(),
+            "members cannot kick"
+        );
     }
 
     #[test]

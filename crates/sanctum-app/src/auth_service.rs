@@ -143,11 +143,15 @@ fn fail(reason: &str) -> SanctumError {
     }
 }
 
-/// Host-side authentication state (nonces, used invites, failure window).
+/// Host-side authentication state (nonces, used invites, revocations,
+/// failure window).
 pub struct AuthService {
     /// nonce → timestamp of the challenge.
     used_nonces: HashMap<Vec<u8>, u64>,
     used_invites: HashSet<[u8; 32]>,
+    /// fingerprint → time of revocation: invitations issued at or before
+    /// this time are refused.
+    revoked: HashMap<Fingerprint, u64>,
     failures: VecDeque<u64>,
 }
 
@@ -157,8 +161,15 @@ impl AuthService {
         Self {
             used_nonces: HashMap::new(),
             used_invites: HashSet::new(),
+            revoked: HashMap::new(),
             failures: VecDeque::new(),
         }
+    }
+
+    /// Revoke `fingerprint` at `now`: every invitation issued for it until
+    /// then becomes unusable. A later invitation re-admits it.
+    pub fn revoke(&mut self, fingerprint: &Fingerprint, now: u64) {
+        self.revoked.insert(fingerprint.clone(), now);
     }
 
     /// Generate a challenge for a connecting client.
@@ -295,6 +306,14 @@ impl AuthService {
         if self.used_invites.contains(&invite_id(invite)) {
             return Err(fail("invitation already used"));
         }
+        if let Some(revoked_at) = self.revoked.get(fingerprint) {
+            if invite.issued_at <= *revoked_at {
+                return Err(fail("invitation revoked by the owner"));
+            }
+        }
+        if invite.issued_at > now.saturating_add(TIMESTAMP_TOLERANCE_SECS) {
+            return Err(fail("invitation issued in the future"));
+        }
         Ok(invite.role)
     }
 
@@ -424,6 +443,7 @@ mod tests {
                 invited_fingerprint: toy_fp(pk),
                 role: Role::Member,
                 expires_at,
+                issued_at: unix_now(),
                 signature: vec![],
             };
             t.signature = toy_sign(&OWNER_PK, &t.signed_data());
@@ -569,6 +589,40 @@ mod tests {
             let err = verify(&mut svc, &fx, &c, &H1, &r).unwrap_err().to_string();
             assert!(err.contains(expected), "case {expected}: got {err}");
         }
+    }
+
+    #[test]
+    fn revocation_blocks_earlier_invitations_only() {
+        let fx = Fixture::new();
+        let mut svc = AuthService::new();
+        let now = unix_now();
+        let old = fx.invite_for(&ALICE_PK, now + 3600); // issued_at = now
+        svc.revoke(&toy_fp(&ALICE_PK), now);
+
+        let c = svc.create_challenge(&fx.room_id, &HOST_KEY);
+        let r = respond(&ALICE_PK, &H1, &c, Some(old));
+        let err = verify(&mut svc, &fx, &c, &H1, &r).unwrap_err().to_string();
+        assert!(err.contains("revoked"), "{err}");
+
+        // A new invitation issued after the revocation re-admits Alice.
+        let mut fresh = fx.invite_for(&ALICE_PK, now + 3600);
+        fresh.issued_at = now + 1;
+        fresh.signature = toy_sign(&OWNER_PK, &fresh.signed_data());
+        let c = svc.create_challenge(&fx.room_id, &HOST_KEY);
+        let r = respond(&ALICE_PK, &H2, &c, Some(fresh));
+        assert!(verify(&mut svc, &fx, &c, &H2, &r).is_ok());
+    }
+
+    #[test]
+    fn invitation_from_the_future_is_rejected() {
+        let fx = Fixture::new();
+        let mut svc = AuthService::new();
+        let mut t = fx.invite_for(&ALICE_PK, unix_now() + 7200);
+        t.issued_at = unix_now() + 3600;
+        t.signature = toy_sign(&OWNER_PK, &t.signed_data());
+        let c = svc.create_challenge(&fx.room_id, &HOST_KEY);
+        let r = respond(&ALICE_PK, &H1, &c, Some(t));
+        assert!(verify(&mut svc, &fx, &c, &H1, &r).is_err());
     }
 
     #[test]

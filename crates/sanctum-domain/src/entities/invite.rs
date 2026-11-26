@@ -24,6 +24,10 @@ pub struct InviteToken {
     pub role: Role,
     /// Expiration timestamp (Unix seconds).
     pub expires_at: u64,
+    /// Unix timestamp of issuance: invitations issued before a revocation
+    /// of the invitee are refused.
+    #[serde(default)]
+    pub issued_at: u64,
     /// Ed25519 signature by the inviter over [`InviteToken::signed_data`].
     pub signature: Vec<u8>,
 }
@@ -51,6 +55,7 @@ impl InviteToken {
         put_field(&mut data, self.invited_fingerprint.as_str().as_bytes());
         put_field(&mut data, &[self.role as u8]);
         put_field(&mut data, &self.expires_at.to_be_bytes());
+        put_field(&mut data, &self.issued_at.to_be_bytes());
         data
     }
 
@@ -79,6 +84,7 @@ mod tests {
             invited_fingerprint: Fingerprint::new("B".repeat(40)).unwrap(),
             role: Role::Member,
             expires_at: 1_000,
+            issued_at: 500,
             signature: vec![],
         }
     }
@@ -103,6 +109,9 @@ mod tests {
         assert_ne!(base, t.signed_data());
         let mut t = token();
         t.expires_at += 1;
+        assert_ne!(base, t.signed_data());
+        let mut t = token();
+        t.issued_at += 1;
         assert_ne!(base, t.signed_data());
         let mut t = token();
         t.host_noise_pubkey[0] ^= 1;

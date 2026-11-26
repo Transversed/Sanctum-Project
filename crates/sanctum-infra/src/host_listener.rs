@@ -12,6 +12,8 @@
 //! 5. Relay loop: key exchanges and room messages are routed to their single
 //!    recipient with the authenticated sender stamped (I3). The host never
 //!    holds a key that decrypts them.
+//! 6. Room control: the owner can revoke a member (`RevokeMember`): it is
+//!    removed, disconnected, and its earlier invitations stop working.
 
 use crate::codec::{self, message_types, Frame};
 use crate::identity::Ed25519Verifier;
@@ -63,6 +65,12 @@ impl Default for HostLimits {
     }
 }
 
+/// Outbound queue of a connection, and a switch to close it.
+struct ClientHandle {
+    tx: mpsc::Sender<Frame>,
+    removed: CancellationToken,
+}
+
 /// A published bundle: identity part + pool of one-time prekeys.
 struct StoredBundle {
     bundle: pb::PreKeyBundle,
@@ -82,7 +90,7 @@ struct HostState {
     host_noise_pubkey: Vec<u8>,
     /// Never cloned: every connection borrows it through the `Arc`.
     host_noise_privkey: Zeroizing<Vec<u8>>,
-    clients: Mutex<HashMap<u64, mpsc::Sender<Frame>>>,
+    clients: Mutex<HashMap<u64, ClientHandle>>,
     /// fingerprint → sanitized alias of connected members.
     aliases: Mutex<HashMap<String, String>>,
     route_tx: broadcast::Sender<RoutedMessage>,
@@ -216,7 +224,14 @@ async fn handle_client(
         .await
         .insert(fingerprint.as_str().to_string(), display_alias.clone());
     let (out_tx, mut out_rx) = mpsc::channel::<Frame>(256);
-    st.clients.lock().await.insert(conn_id, out_tx);
+    let removed = CancellationToken::new();
+    st.clients.lock().await.insert(
+        conn_id,
+        ClientHandle {
+            tx: out_tx,
+            removed: removed.clone(),
+        },
+    );
     let mut route_rx = st.route_tx.subscribe();
 
     // ── Phase 3: PeerReady for existing members → newcomer, then broadcast ──
@@ -257,6 +272,17 @@ async fn handle_client(
                 break;
             }
 
+            _ = removed.cancelled() => {
+                let notice = WireMessage::ProtocolError(pb::ProtocolError {
+                    code: "revoked".into(),
+                    message: "you were removed from the room by its owner".into(),
+                });
+                if let Ok(f) = proto_codec::proto_encode(&notice) {
+                    let _ = transport.send_frame(&f).await;
+                }
+                break;
+            }
+
             result = transport.recv_frame() => {
                 idle.as_mut().reset(Instant::now() + st.limits.idle_timeout);
                 let frame = match result {
@@ -275,6 +301,9 @@ async fn handle_client(
                         on_publish_bundle(&st, &fingerprint, &frame, &mut transport).await?
                     }
                     message_types::REFRESH_OPK => on_refresh_opk(&st, &fingerprint, &frame).await,
+                    message_types::ROOM_CONTROL => {
+                        on_room_control(&st, &fingerprint, &frame, &mut transport).await?
+                    }
                     message_types::RATCHET_KEY_EXCHANGE | message_types::ROOM_MESSAGE => {
                         // I3: stamped with the authenticated sender, routed to
                         // its single recipient. Invalid frames are dropped.
@@ -336,7 +365,7 @@ async fn handle_client(
 async fn send_to(st: &HostState, to: &Fingerprint, frame: Frame) {
     let cid = st.host_service.lock().await.connection_id_for(to);
     let Some(cid) = cid else { return };
-    let tx = st.clients.lock().await.get(&cid).cloned();
+    let tx = st.clients.lock().await.get(&cid).map(|h| h.tx.clone());
     if let Some(tx) = tx {
         let _ = tx.send(frame).await;
     }
@@ -420,6 +449,55 @@ async fn on_publish_bundle(
         }
     }
     Ok(true)
+}
+
+/// Owner commands. Only `RevokeMember` is supported in this version.
+async fn on_room_control(
+    st: &HostState,
+    me: &Fingerprint,
+    frame: &Frame,
+    transport: &mut NoiseTransport,
+) -> Result<bool, SanctumError> {
+    let Ok(WireMessage::RoomControl(rc)) = proto_codec::proto_decode(frame) else {
+        return Ok(false);
+    };
+    let reply = match rc.action {
+        Some(pb::room_control::Action::RevokeMember(r)) => {
+            match revoke(st, me, &r.fingerprint).await {
+                Ok(()) => WireMessage::RoomControl(pb::RoomControl {
+                    action: Some(pb::room_control::Action::RevokeMember(r)),
+                }),
+                Err(e) => WireMessage::ProtocolError(pb::ProtocolError {
+                    code: "revoke_failed".into(),
+                    message: e.to_string(),
+                }),
+            }
+        }
+        _ => WireMessage::ProtocolError(pb::ProtocolError {
+            code: "unsupported".into(),
+            message: "room control action not supported".into(),
+        }),
+    };
+    transport
+        .send_frame(&proto_codec::proto_encode(&reply)?)
+        .await?;
+    Ok(true)
+}
+
+/// Revoke `target`: owner check, removal, invitation revocation, and
+/// disconnection if it is connected. Its peers then receive `PeerLeft`.
+async fn revoke(st: &HostState, me: &Fingerprint, target: &str) -> Result<(), SanctumError> {
+    let target = Fingerprint::new(target.to_string())
+        .map_err(|e| SanctumError::MalformedMessage(format!("invalid fingerprint: {e}")))?;
+    let connection = st.host_service.lock().await.revoke_member(me, &target)?;
+    st.auth_service.lock().await.revoke(&target, unix_now());
+    if let Some(cid) = connection {
+        if let Some(handle) = st.clients.lock().await.get(&cid) {
+            handle.removed.cancel();
+        }
+    }
+    info!("member revoked by the owner");
+    Ok(())
 }
 
 /// Add fresh one-time prekeys to the sender's pool (bounded).
