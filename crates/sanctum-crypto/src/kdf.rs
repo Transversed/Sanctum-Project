@@ -15,19 +15,26 @@ use sha2::Sha256;
 /// - Iterations: 3
 /// - Parallelism: 4
 pub fn derive_master_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], SanctumError> {
+    derive_argon2id(passphrase, salt, 64 * 1024, 3, 4)
+}
+
+/// Argon2id (version 0x13) with explicit parameters: `memory_kib` KiB of
+/// memory, `iterations` passes, `lanes` degree of parallelism, 32-byte output.
+pub fn derive_argon2id(
+    passphrase: &[u8],
+    salt: &[u8],
+    memory_kib: u32,
+    iterations: u32,
+    lanes: u32,
+) -> Result<[u8; 32], SanctumError> {
     if salt.len() < 16 {
         return Err(SanctumError::MalformedMessage(
             "Argon2 salt must be >= 16 bytes".into(),
         ));
     }
 
-    let params = Params::new(
-        64 * 1024, // 64 MiB memory
-        3,         // 3 iterations
-        4,         // 4 parallel lanes
-        Some(32),  // 32-byte output
-    )
-    .map_err(|e| SanctumError::StorageError(format!("argon2 params: {e}")))?;
+    let params = Params::new(memory_kib, iterations, lanes, Some(32))
+        .map_err(|e| SanctumError::StorageError(format!("argon2 params: {e}")))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 

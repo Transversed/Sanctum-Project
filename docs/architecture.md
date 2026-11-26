@@ -76,6 +76,17 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
 | X25519 keys, ratchet sessions, skipped keys | Member RAM (`Zeroizing`) | Member process |
 
 Nothing is written to disk while hosting or chatting (CI check with `strace`).
+
+**Sealed files (`SANCTUMS` v1, `sanctum_crypto::sealed`)** are the container of
+the persistent mode (being built, see the ROADMAP). A 111-byte authenticated
+header (magic, version, kind, Argon2id parameters, salt, wrapped master key)
+followed by `nonce ‖ XChaCha20-Poly1305(K_kind, nonce, plaintext, AD = header)`.
+The random master key is wrapped by `Argon2id(passphrase)`, so unlocking costs
+one Argon2id run and every later save only draws a fresh 24-byte nonce;
+`K_kind = HKDF-SHA256(master, "SANCTUM-STORE-<kind>-v1")` separates host state,
+backlog and client state. Argon2id parameters are bounded when parsing (8 MiB to
+1 GiB, ≤ 16 passes and lanes). Known-answer vectors come from an independent
+Python implementation (`tests/kat/generate_sealed_vectors.py`).
 `--mode persistent` is refused until the persistent mode (v0.2) lands: sealed
 encrypted files, no SQLite (see the CHANGELOG and the ROADMAP).
 

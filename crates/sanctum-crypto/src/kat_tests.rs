@@ -135,3 +135,58 @@ fn double_ratchet_matches_reference_vectors() {
     assert_eq!(alice.encrypt(&p3).unwrap(), (h3, c3.clone()));
     assert_eq!(bob.decrypt(&h3, &c3).unwrap(), p3);
 }
+
+// ── Sealed files (SANCTUMS v1) ──
+
+const SEALED_VECTORS: &str = include_str!("../tests/kat/sealed_vectors.json");
+
+#[test]
+fn sealed_files_match_reference_vectors() {
+    use crate::sealed::{self, KdfParams, MasterKey, SealedHeader, SealedKind};
+
+    let v: Value = serde_json::from_str(SEALED_VECTORS).unwrap();
+    let vectors = v["vectors"].as_array().unwrap();
+    assert_eq!(vectors.len(), 2);
+    for t in vectors {
+        let field = |name: &str| hex(t[name].as_str().unwrap());
+        let num = |name: &str| u32::try_from(t[name].as_u64().unwrap()).unwrap();
+        let kind = match t["kind"].as_u64().unwrap() {
+            1 => SealedKind::HostState,
+            2 => SealedKind::Backlog,
+            3 => SealedKind::ClientState,
+            k => panic!("unknown kind {k}"),
+        };
+        let params = KdfParams {
+            memory_kib: num("memory_kib"),
+            iterations: num("iterations"),
+            lanes: num("lanes"),
+        };
+        let passphrase = field("passphrase");
+        let master = MasterKey::from_bytes(field("master_key").try_into().unwrap());
+
+        let header = SealedHeader::new_with(
+            &master,
+            &passphrase,
+            kind,
+            params,
+            field("salt").try_into().unwrap(),
+            field("wrap_nonce").try_into().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(header.to_bytes(), field("header"), "header");
+
+        let file = sealed::seal_with_nonce(
+            &master,
+            &header,
+            &field("plaintext"),
+            field("body_nonce").try_into().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(file, field("file"), "file");
+
+        let (parsed, _, plaintext) =
+            sealed::open_with_passphrase(&field("file"), &passphrase, kind).unwrap();
+        assert_eq!(parsed, header);
+        assert_eq!(plaintext.as_slice(), field("plaintext").as_slice());
+    }
+}

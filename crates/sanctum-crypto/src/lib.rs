@@ -9,11 +9,14 @@
 #![allow(missing_docs)]
 #![deny(clippy::all)]
 
-/// AES-256-GCM and ChaCha20-Poly1305 AEAD operations.
+/// ChaCha20-Poly1305 and XChaCha20-Poly1305 AEAD operations.
 pub mod aead;
 
 /// Key derivation: Argon2id (passphrase) and HKDF-SHA256 (subkeys).
 pub mod kdf;
+
+/// Sealed files (`SANCTUMS`): encrypted container of the persistent mode.
+pub mod sealed;
 
 /// Message padding (PKCS7-style, constant-size blocks).
 pub mod padding;
