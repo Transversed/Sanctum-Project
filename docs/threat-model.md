@@ -99,7 +99,11 @@ departure; revocations live in the host's memory and disappear with the session
   (`mlock` is *not implemented*) and may reach swap; disable swap and core dumps on
   sensitive machines. A compromised member device reveals that member's messages.
 - **Clock.** Displayed times come from the sender's clock.
-- **Persistent mode** is not implemented in v0.1.1 (refused by the CLI).
+- **Persistent rooms** (v0.2, in progress) keep the room's membership on the
+  host's disk, sealed (Argon2id + XChaCha20-Poly1305): a copy of the disk alone
+  reveals file sizes and dates; with the store passphrase, the member list and
+  the revocations. The stable `.onion` is a long-lived target. Deletion on disk
+  is not secure (journaling, SSD, snapshots).
 - **No external audit yet.**
 
 ## 5. Explicit assumptions

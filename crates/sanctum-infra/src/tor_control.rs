@@ -113,8 +113,42 @@ impl TorController {
         Ok(())
     }
 
-    /// Create a new ephemeral v3 hidden service.
+    /// Create a new ephemeral v3 hidden service: Tor generates the key and
+    /// discards it (`Flags=DiscardPK`), so the address dies with the session.
     pub async fn create_hidden_service(&mut self) -> Result<HiddenService, SanctumError> {
+        let (hs, _) = self.add_onion(OnionKey::Discard).await?;
+        Ok(hs)
+    }
+
+    /// Create the onion service of a persistent room.
+    ///
+    /// With `key` (from the sealed store) the address is the room's stable
+    /// one; without, Tor generates a key, which is returned so the caller can
+    /// store it. Tor never writes the key to disk: no `HiddenServiceDir` and
+    /// no `Detach`, so the service also disappears when Sanctum stops.
+    pub async fn create_persistent_hidden_service(
+        &mut self,
+        key: Option<&str>,
+    ) -> Result<(HiddenService, Zeroizing<String>), SanctumError> {
+        let (hs, returned) = match key {
+            Some(k) => {
+                check_onion_key(k)?;
+                self.add_onion(OnionKey::Given(k)).await?
+            }
+            None => self.add_onion(OnionKey::New).await?,
+        };
+        let key = match (key, returned) {
+            (Some(k), _) => Zeroizing::new(k.to_string()),
+            (None, Some(k)) => k,
+            (None, None) => return Err(tor_err("Tor did not return the onion service key")),
+        };
+        Ok((hs, key))
+    }
+
+    async fn add_onion(
+        &mut self,
+        key: OnionKey<'_>,
+    ) -> Result<(HiddenService, Option<Zeroizing<String>>), SanctumError> {
         if self.active_service.is_some() {
             return Err(SanctumError::TorUnavailable(
                 "hidden service already active".into(),
@@ -122,7 +156,11 @@ impl TorController {
         }
 
         if self.mock {
-            let onion = generate_mock_onion();
+            let key = match key {
+                OnionKey::Given(k) => Zeroizing::new(k.to_string()),
+                OnionKey::New | OnionKey::Discard => generate_mock_onion_key(),
+            };
+            let onion = mock_onion_for_key(&key);
             let service_id = onion.strip_suffix(".onion").unwrap_or(&onion).to_string();
             let hs = HiddenService {
                 onion_address: onion,
@@ -130,7 +168,7 @@ impl TorController {
                 service_id,
             };
             self.active_service = Some(hs.clone());
-            return Ok(hs);
+            return Ok((hs, Some(key)));
         }
 
         let reader = self.control_stream.as_mut().ok_or_else(|| {
@@ -139,31 +177,44 @@ impl TorController {
             )
         })?;
 
-        let cmd = format!(
-            "ADD_ONION NEW:ED25519-V3 Port={},127.0.0.1:{} Flags=DiscardPK\r\n",
-            self.config.hidden_service_port, self.config.local_port,
+        let ports = format!(
+            "Port={},127.0.0.1:{}",
+            self.config.hidden_service_port, self.config.local_port
         );
-
+        // The command may carry the private key: wiped after use.
+        let cmd = Zeroizing::new(match key {
+            OnionKey::Discard => format!("ADD_ONION NEW:ED25519-V3 {ports} Flags=DiscardPK\r\n"),
+            OnionKey::New => format!("ADD_ONION NEW:ED25519-V3 {ports}\r\n"),
+            OnionKey::Given(k) => format!("ADD_ONION {k} {ports}\r\n"),
+        });
         write_cmd(reader, &cmd).await?;
 
         let mut service_id = String::new();
+        let mut private_key = None;
         loop {
-            let line = read_response(reader).await?;
-            if line.starts_with("250-ServiceID=") {
-                service_id = line.trim_start_matches("250-ServiceID=").trim().to_string();
+            let line = Zeroizing::new(read_response(reader).await?);
+            if let Some(id) = line.strip_prefix("250-ServiceID=") {
+                service_id = id.trim().to_string();
+            } else if let Some(k) = line.strip_prefix("250-PrivateKey=") {
+                private_key = Some(Zeroizing::new(k.trim().to_string()));
             } else if line.starts_with("250 ") {
                 break;
-            } else if line.starts_with("5") {
+            } else if line.starts_with('5') || line.starts_with('4') || line.is_empty() {
+                // Never echo the line: it could contain key material.
                 return Err(SanctumError::TorUnavailable(format!(
-                    "ADD_ONION failed: {line}"
+                    "ADD_ONION failed (status {})",
+                    line.get(..3).unwrap_or("?")
                 )));
             }
         }
 
-        if service_id.is_empty() {
+        if service_id.is_empty() || !is_service_id(&service_id) {
             return Err(SanctumError::TorUnavailable(
-                "ADD_ONION did not return a ServiceID".into(),
+                "ADD_ONION did not return a valid ServiceID".into(),
             ));
+        }
+        if let Some(k) = &private_key {
+            check_onion_key(k)?;
         }
 
         let onion_address = format!("{service_id}.onion");
@@ -176,7 +227,7 @@ impl TorController {
         // Never log the .onion address (metadata).
         info!("hidden service created");
         self.active_service = Some(hs.clone());
-        Ok(hs)
+        Ok((hs, private_key))
     }
 
     /// Destroy the active hidden service.
@@ -406,31 +457,66 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
-fn generate_mock_onion() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 35];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let chars: Vec<char> = bytes
-        .iter()
-        .flat_map(|b| {
-            let hi = (b >> 4) & 0x0F;
-            let lo = b & 0x0F;
-            vec![
-                if hi < 10 {
-                    (b'a' + hi) as char
-                } else {
-                    (b'2' + hi - 10) as char
-                },
-                if lo < 10 {
-                    (b'a' + lo) as char
-                } else {
-                    (b'2' + lo - 10) as char
-                },
-            ]
-        })
-        .take(56)
-        .collect();
-    format!("{}.onion", chars.iter().collect::<String>())
+/// Which key `ADD_ONION` uses.
+enum OnionKey<'a> {
+    /// New key, discarded by Tor (ephemeral room).
+    Discard,
+    /// New key, returned to Sanctum (persistent room, first start).
+    New,
+    /// The stored key (persistent room).
+    Given(&'a str),
+}
+
+/// A v3 service id: 56 base32 characters.
+fn is_service_id(id: &str) -> bool {
+    id.len() == 56 && id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+}
+
+/// `ED25519-V3:<base64 of the 64-byte expanded key>`, nothing else: the key
+/// is pasted into a control command, so it must not carry spaces or CR/LF.
+fn check_onion_key(key: &str) -> Result<(), SanctumError> {
+    let ok = key.strip_prefix("ED25519-V3:").is_some_and(|b64| {
+        (40..=128).contains(&b64.len())
+            && b64
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(tor_err("invalid onion service key"))
+    }
+}
+
+/// Mock mode: a random key in Tor's format.
+fn generate_mock_onion_key() -> Zeroizing<String> {
+    use base64::Engine;
+    let mut bytes = Zeroizing::new([0u8; 64]);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, bytes.as_mut());
+    Zeroizing::new(format!(
+        "ED25519-V3:{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes.as_ref())
+    ))
+}
+
+/// Mock mode: an address derived from the key, so that a persistent room
+/// keeps the same (fake) address across restarts.
+fn mock_onion_for_key(key: &str) -> String {
+    use sha2::Digest;
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut out = String::with_capacity(62);
+    let mut counter = 0u8;
+    while out.len() < 56 {
+        let digest = Sha256::new()
+            .chain_update([counter])
+            .chain_update(key.as_bytes())
+            .finalize();
+        out.extend(digest.iter().map(|b| ALPHABET[usize::from(b & 31)] as char));
+        counter += 1;
+    }
+    out.truncate(56);
+    out.push_str(".onion");
+    out
 }
 
 #[cfg(test)]
@@ -488,11 +574,150 @@ mod tests {
     }
 
     #[test]
-    fn mock_onion_format() {
-        let addr = generate_mock_onion();
+    fn mock_onion_format_and_stability() {
+        let key = generate_mock_onion_key();
+        assert!(check_onion_key(&key).is_ok());
+        let addr = mock_onion_for_key(&key);
         assert!(addr.ends_with(".onion"));
-        let name = addr.strip_suffix(".onion").unwrap();
-        assert_eq!(name.len(), 56);
+        assert!(is_service_id(addr.strip_suffix(".onion").unwrap()));
+        assert_eq!(addr, mock_onion_for_key(&key));
+        assert_ne!(addr, mock_onion_for_key(&generate_mock_onion_key()));
+    }
+
+    #[test]
+    fn onion_keys_that_could_inject_commands_are_refused() {
+        for bad in [
+            "",
+            "ED25519-V3:",
+            "RSA1024:AAAA",
+            "ED25519-V3:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nDEL_ONION x",
+            "ED25519-V3:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA AAAA Flags=Detach",
+        ] {
+            assert!(check_onion_key(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_persistent_service_keeps_its_address() {
+        let mut tor = TorController::mock();
+        let (first, key) = tor.create_persistent_hidden_service(None).await.unwrap();
+        tor.destroy_hidden_service().await.unwrap();
+        let (again, same) = tor
+            .create_persistent_hidden_service(Some(&key))
+            .await
+            .unwrap();
+        assert_eq!(first.onion_address, again.onion_address);
+        assert_eq!(*key, *same);
+    }
+
+    /// A fake Tor control port: SAFECOOKIE with a real cookie file, then
+    /// records every command and answers ADD_ONION like Tor does.
+    async fn fake_control_port(
+        with_private_key: bool,
+    ) -> (
+        TorConfig,
+        tempfile::TempDir,
+        tokio::task::JoinHandle<Vec<String>>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cookie: Vec<u8> = (100u8..132).collect();
+        let cookie_path = dir.path().join("control_auth_cookie");
+        std::fs::write(&cookie_path, &cookie).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut seen = Vec::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end().to_string();
+                let reply = if line.starts_with("PROTOCOLINFO") {
+                    format!(
+                        "250-PROTOCOLINFO 1\r\n250-AUTH METHODS=COOKIE,SAFECOOKIE COOKIEFILE=\"{}\"\r\n250 OK\r\n",
+                        cookie_path.display()
+                    )
+                } else if let Some(cn) = line.strip_prefix("AUTHCHALLENGE SAFECOOKIE ") {
+                    let cn = hex_decode(cn).unwrap();
+                    let sn = [0x42u8; 32];
+                    format!(
+                        "250 AUTHCHALLENGE SERVERHASH={} SERVERNONCE={}\r\n",
+                        hex_encode(&safecookie_server_hash(&cookie, &cn, &sn)),
+                        hex_encode(&sn)
+                    )
+                } else if line.starts_with("ADD_ONION") {
+                    let mut r = format!("250-ServiceID={}\r\n", "a".repeat(56));
+                    if with_private_key {
+                        r.push_str(&format!("250-PrivateKey=ED25519-V3:{}\r\n", "Q".repeat(88)));
+                    }
+                    r + "250 OK\r\n"
+                } else {
+                    "250 OK\r\n".to_string()
+                };
+                seen.push(line);
+                reader.get_mut().write_all(reply.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+        let config = TorConfig {
+            socks_addr: "127.0.0.1:9".into(),
+            control_addr: addr.to_string(),
+            hidden_service_port: 9738,
+            local_port: 41000,
+        };
+        (config, dir, handle)
+    }
+
+    #[tokio::test]
+    async fn a_new_persistent_service_returns_the_key_tor_generated() {
+        let (config, _dir, server) = fake_control_port(true).await;
+        let mut tor = TorController::new(config);
+        tor.connect().await.unwrap();
+        let (hs, key) = tor.create_persistent_hidden_service(None).await.unwrap();
+        assert_eq!(hs.onion_address, format!("{}.onion", "a".repeat(56)));
+        assert_eq!(*key, format!("ED25519-V3:{}", "Q".repeat(88)));
+        drop(tor);
+        let seen = server.await.unwrap();
+        let add = seen.iter().find(|l| l.starts_with("ADD_ONION")).unwrap();
+        assert_eq!(add, "ADD_ONION NEW:ED25519-V3 Port=9738,127.0.0.1:41000");
+        assert!(!add.contains("DiscardPK") && !add.contains("Detach"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_key_is_given_back_to_tor() {
+        let (config, _dir, server) = fake_control_port(false).await;
+        let mut tor = TorController::new(config);
+        tor.connect().await.unwrap();
+        let stored = format!("ED25519-V3:{}", "Z".repeat(88));
+        let (_, key) = tor
+            .create_persistent_hidden_service(Some(&stored))
+            .await
+            .unwrap();
+        assert_eq!(*key, stored);
+        drop(tor);
+        let seen = server.await.unwrap();
+        let add = seen.iter().find(|l| l.starts_with("ADD_ONION")).unwrap();
+        assert_eq!(
+            add,
+            &format!("ADD_ONION {stored} Port=9738,127.0.0.1:41000")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ephemeral_service_still_discards_its_key() {
+        let (config, _dir, server) = fake_control_port(false).await;
+        let mut tor = TorController::new(config);
+        tor.connect().await.unwrap();
+        tor.create_hidden_service().await.unwrap();
+        drop(tor);
+        let seen = server.await.unwrap();
+        assert!(seen
+            .iter()
+            .any(|l| l == "ADD_ONION NEW:ED25519-V3 Port=9738,127.0.0.1:41000 Flags=DiscardPK"));
     }
 
     #[test]

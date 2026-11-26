@@ -18,6 +18,9 @@ pub mod codec;
 /// Ed25519 identity adapter (sign/verify, fingerprint derivation).
 pub mod identity;
 
+/// Persistent host store (sealed state file per room).
+pub mod host_store;
+
 /// Transport framing and connection management.
 pub mod transport;
 

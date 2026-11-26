@@ -112,9 +112,23 @@ terminal, `sanctum join` reads lines from stdin and prints one event per line.
 
 | | Ephemeral | Persistent |
 |---|---|---|
-| Availability | **v0.1.1** | Planned for v0.2 (refused by the CLI) |
-| Disk writes | None | Encrypted store |
-| `.onion` address | New every session | Stable |
+| Availability | **v0.1.1** | **v0.2 (in progress)**: durable room; offline delivery comes next |
+| Disk writes | None | Host only: one sealed file per room (Argon2id + XChaCha20-Poly1305) |
+| `.onion` address | New every session | Stable (key kept in the sealed store, never by Tor) |
+| Owner's private key on the host | Yes (`--chat`) | **No**: the host knows the owner's public key only |
+
+A persistent room is meant for a 24/7 machine:
+
+```bash
+# on the owner's machine
+sanctum identity show                       # → public key
+# on the host (no Sanctum identity needed there)
+sanctum host create ops --mode persistent --owner-key <public key>
+#   → prints the command the owner runs on their machine to get their token
+sanctum host start <room_id>                # after a reboot
+# on the owner's machine
+sanctum join <token>                        # /invite and /kick work from here
+```
 
 ## Architecture
 

@@ -39,6 +39,11 @@ pub async fn run(
     // Validate: is this token for us?
     invite_codec::validate_invite(&invite, &local_fp)?;
     println!("[sanctum] token valid (for our fingerprint)");
+    if invite_codec::is_expired_now(&invite) {
+        println!(
+            "[sanctum] the invitation has expired: only a member already admitted can still use it"
+        );
+    }
 
     // Connect: Tor for .onion, direct TCP only for loopback (local tests).
     // Anything else would be a clearnet connection: refused.
@@ -95,20 +100,25 @@ pub async fn run(
     println!("[sanctum] type messages or /exit to quit");
     println!("──────────────────────────────────────────────");
 
+    // The owner of a persistent room connects from its own machine: it
+    // issues invitations and removes members from this chat.
+    let identity = std::sync::Arc::new(identity);
+    let inviter = (session.role == "Owner").then(|| chat_loop::InviteIssuer {
+        identity: identity.clone(),
+        target: invite_codec::InviteTarget {
+            room_id: invite.room_id.clone(),
+            onion_address: invite.onion_address.clone(),
+            port: invite.port,
+            host_noise_pubkey: invite.host_noise_pubkey.clone(),
+        },
+    });
     let chat_cfg = chat_loop::ChatConfig {
         room_name: invite.room_id.as_str().chars().take(8).collect(),
-        room_mode: "ephemeral".into(),
+        room_mode: if inviter.is_some() { "owner" } else { "member" }.into(),
         tor_connected: !is_loopback,
-        inviter: None,
+        inviter,
     };
-    chat_loop::run(
-        session.transport,
-        std::sync::Arc::new(identity),
-        alias,
-        shutdown,
-        chat_cfg,
-    )
-    .await;
+    chat_loop::run(session.transport, identity, alias, shutdown, chat_cfg).await;
 
     println!("[sanctum] goodbye.");
     Ok(())

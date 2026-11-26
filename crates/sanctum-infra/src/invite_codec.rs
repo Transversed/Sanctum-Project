@@ -115,27 +115,31 @@ pub fn decode_host_key(encoded: &str) -> Result<Vec<u8>, SanctumError> {
     Ok(key)
 }
 
-/// Validate a decoded invite token (check expiry and fingerprint).
+/// Client-side check of a decoded token: it must be addressed to us.
+///
+/// Expiry is *not* checked here: the token also tells a member already
+/// admitted where the room is (onion, port, host key), long after the
+/// invitation itself expired. The host enforces expiry for newcomers;
+/// [`is_expired_now`] lets the client warn.
 pub fn validate_invite(
     token: &InviteToken,
     local_fingerprint: &sanctum_domain::entities::member::Fingerprint,
 ) -> Result<(), SanctumError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    if token.is_expired(now) {
-        return Err(SanctumError::InviteTokenExpired);
-    }
-
     if !token.is_for(local_fingerprint) {
         return Err(SanctumError::InvalidInviteToken(
             "this invite is not for your fingerprint".into(),
         ));
     }
-
     Ok(())
+}
+
+/// Whether the invitation part of `token` has expired.
+pub fn is_expired_now(token: &InviteToken) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    token.is_expired(now)
 }
 
 #[cfg(test)]
@@ -296,14 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_expired_token() {
+    fn an_expired_token_still_locates_the_room_for_members() {
         let mut token = make_token();
         token.expires_at = 100; // Way in the past
-
         let bob = Fingerprint::new("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB").unwrap();
-        let result = validate_invite(&token, &bob);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("expired"));
+        assert!(validate_invite(&token, &bob).is_ok());
+        assert!(is_expired_now(&token));
+        assert!(!is_expired_now(&make_token()));
     }
 
     #[test]

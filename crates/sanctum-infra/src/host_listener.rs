@@ -14,6 +14,10 @@
 //!    holds a key that decrypts them.
 //! 6. Room control: the owner can revoke a member (`RevokeMember`): it is
 //!    removed, disconnected, and its earlier invitations stop working.
+//!
+//! Persistent rooms: admissions and revocations are saved through the
+//! [`HostStatePort`] *before* they are confirmed. If a save fails the host
+//! stops: a restart resumes from the last confirmed state.
 
 use crate::codec::{self, message_types, Frame};
 use crate::identity::Ed25519Verifier;
@@ -27,15 +31,17 @@ use sanctum_app::host_service::HostService;
 use sanctum_app::sanitize::sanitize_alias;
 use sanctum_domain::entities::member::{DisplayAlias, Fingerprint, Member, Role};
 use sanctum_domain::errors::SanctumError;
+use sanctum_domain::ports::host_state::{HostRoomState, HostStatePort};
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, Mutex, Semaphore};
 use tokio::time::{timeout, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use zeroize::Zeroizing;
 
 /// A client sending this many invalid frames is disconnected.
@@ -98,6 +104,14 @@ struct HostState {
     /// Bundles of connected members, in RAM only.
     bundles: Mutex<HashMap<Fingerprint, StoredBundle>>,
     limits: HostLimits,
+    /// Persistent rooms only: where admissions and revocations are saved.
+    store: Option<Arc<dyn HostStatePort>>,
+    /// Serializes saves, so the last one written is the latest state.
+    persist_lock: Mutex<()>,
+    /// Cancelled to stop the host (also on a failed save).
+    shutdown: CancellationToken,
+    /// Set when a save failed (the host then stops).
+    storage_failed: Arc<AtomicBool>,
     /// Test-only copy of every frame the host decrypts (Noise layer).
     #[cfg(feature = "test-support")]
     tap: Option<mpsc::UnboundedSender<Frame>>,
@@ -135,6 +149,10 @@ impl HostListener {
                 verifier: Ed25519Verifier,
                 bundles: Mutex::new(HashMap::new()),
                 limits: HostLimits::default(),
+                store: None,
+                persist_lock: Mutex::new(()),
+                shutdown: shutdown.clone(),
+                storage_failed: Arc::new(AtomicBool::new(false)),
                 #[cfg(feature = "test-support")]
                 tap: None,
             }),
@@ -146,6 +164,25 @@ impl HostListener {
     pub fn with_limits(mut self, limits: HostLimits) -> Self {
         state_mut(&mut self.state).limits = limits;
         self
+    }
+
+    /// Persistent room: save admissions and revocations to `store`, starting
+    /// from `auth_service` (revocations and consumed invitations restored
+    /// from that store).
+    pub fn with_persistence(
+        mut self,
+        store: Arc<dyn HostStatePort>,
+        auth_service: AuthService,
+    ) -> Self {
+        let st = state_mut(&mut self.state);
+        st.store = Some(store);
+        st.auth_service = Mutex::new(auth_service);
+        self
+    }
+
+    /// Becomes `true` if the host stopped because a save failed.
+    pub fn storage_failure(&self) -> Arc<AtomicBool> {
+        self.state.storage_failed.clone()
     }
 
     /// Test-only: receive a copy of every frame the host can read.
@@ -491,6 +528,7 @@ async fn revoke(st: &HostState, me: &Fingerprint, target: &str) -> Result<(), Sa
         .map_err(|e| SanctumError::MalformedMessage(format!("invalid fingerprint: {e}")))?;
     let connection = st.host_service.lock().await.revoke_member(me, &target)?;
     st.auth_service.lock().await.revoke(&target, unix_now());
+    persist(st).await?;
     if let Some(cid) = connection {
         if let Some(handle) = st.clients.lock().await.get(&cid) {
             handle.removed.cancel();
@@ -498,6 +536,32 @@ async fn revoke(st: &HostState, me: &Fingerprint, target: &str) -> Result<(), Sa
     }
     info!("member revoked by the owner");
     Ok(())
+}
+
+/// Persistent rooms: save the durable state (room, revocations, consumed
+/// invitations). Callers must not hold the service locks. A failed save
+/// stops the host: what it has in RAM is no longer what a restart would load.
+async fn persist(st: &HostState) -> Result<(), SanctumError> {
+    let Some(store) = st.store.clone() else {
+        return Ok(());
+    };
+    let _serialized = st.persist_lock.lock().await;
+    let room = st.host_service.lock().await.room().clone();
+    let (revocations, used_invites) = st.auth_service.lock().await.durable_state(unix_now());
+    let state = HostRoomState {
+        room,
+        revocations,
+        used_invites,
+    };
+    let saved = tokio::task::spawn_blocking(move || store.save(&state))
+        .await
+        .unwrap_or_else(|_| Err(SanctumError::StorageError("save task failed".into())));
+    if saved.is_err() {
+        error!("the host state could not be saved: stopping the host");
+        st.storage_failed.store(true, Ordering::SeqCst);
+        st.shutdown.cancel();
+    }
+    saved
 }
 
 /// Add fresh one-time prekeys to the sender's pool (bounded).
@@ -677,7 +741,11 @@ async fn authenticate_client(
             }
             Err(e) => Err(e),
         };
-        if let Err(e) = added {
+        let saved = match added {
+            Ok(()) => persist(st).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = saved {
             send_auth_result(transport, Err(&e)).await?;
             return Err(e);
         }

@@ -16,7 +16,7 @@ pub enum IdentityAction {
         /// Path to the key file (ignored).
         keyfile: String,
     },
-    /// Show the current identity (fingerprint).
+    /// Show the current identity (fingerprint, public key).
     Show,
     /// Encrypt an identity key created by an older, unencrypted version.
     Protect,
@@ -39,8 +39,14 @@ pub async fn run(
     match action {
         IdentityAction::Import { .. } => Err(IMPORT_DISABLED.into()),
         IdentityAction::Show => {
-            let fp = IdentityAdapter::public_fingerprint_in(&IdentityAdapter::default_dir())?;
+            let dir = IdentityAdapter::default_dir();
+            let fp = IdentityAdapter::public_fingerprint_in(&dir)?;
+            let pk = IdentityAdapter::public_key_in(&dir)?;
             println!("[sanctum] fingerprint: {}", fp.as_str());
+            println!(
+                "[sanctum] public key: {}",
+                pk.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
             println!("[sanctum] alias: {}", config.identity.alias);
             Ok(())
         }

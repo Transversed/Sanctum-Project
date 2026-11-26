@@ -64,8 +64,37 @@ sanctum host create ops-room --chat
 ```
 
 L'hôte crée un service onion éphémère (adresse nouvelle à chaque lancement),
-affiche votre fingerprint et ouvre le chat en tant qu'owner. Le mode persistant
-n'existe pas encore (`--mode persistent` est refusé).
+affiche votre fingerprint et ouvre le chat en tant qu'owner. Tout disparaît à
+l'arrêt de l'hôte.
+
+### Room persistante (machine allumée en permanence)
+
+L'hôte garde la room dans un fichier scellé (`~/.sanctum/hosts/<room_id>/`) :
+même adresse `.onion`, mêmes membres et mêmes révocations après un redémarrage.
+Il ne détient **pas** la clé privée de l'owner, seulement sa clé publique.
+
+1. Sur la machine de l'owner : `sanctum identity show` → `public key: <hex>`.
+2. Sur l'hôte :
+   `sanctum host create ops --mode persistent --owner-key <hex>`.
+   Choisissez la passphrase du magasin de l'hôte (distincte de toute identité).
+   L'hôte affiche l'id de la room et une commande `sanctum room invite <votre fp> …`.
+3. Sur la machine de l'owner : lancez cette commande, puis `sanctum join <jeton>`.
+   Depuis ce chat, `/invite` et `/kick` fonctionnent comme d'habitude.
+4. Après un redémarrage de l'hôte : `sanctum host start <room_id>` (ou un préfixe
+   de l'id ; `sanctum host list` les liste). Les membres se reconnectent avec
+   **leur jeton d'origine**, même expiré : il ne sert plus qu'à localiser la room.
+
+`host start` n'affiche pas l'adresse `.onion` (la sortie standard finit souvent
+dans le journal système) ; `--show-address` l'affiche avec la commande de jeton
+de l'owner. `sanctum host delete <room_id> --yes` supprime la room ; la
+suppression n'est pas sûre sur un disque journalisé, un SSD ou un snapshot de
+VM : chiffrez le disque.
+
+Passphrase du magasin : saisie au démarrage par défaut. Pour un redémarrage sans
+intervention, fournissez-la comme credential systemd nommé
+`sanctum-host-passphrase` (`LoadCredentialEncrypted=`) ; `SANCTUM_HOST_PASSPHRASE`
+est réservé aux tests. Si une sauvegarde échoue (disque plein…), l'hôte s'arrête
+avec un code d'erreur : il ne confirme jamais un changement non enregistré.
 
 ### Inviter un membre
 
@@ -167,7 +196,10 @@ les timeouts (30 s pour le handshake côté hôte, 90 s pour `join`).
 | `invitation already used` / `expired` | jeton consommé ou périmé | demander un nouveau jeton |
 | `invitation revoked by the owner` | membre retiré par `/kick` après l'émission du jeton | demander un nouveau jeton à l'owner |
 | `vous avez été retiré de la room par son owner` | `/kick` de l'owner | voir avec l'owner |
-| `invitation is for another host session` | l'hôte a redémarré (nouvelle clé Noise) | nouveau jeton |
+| `invitation is for another host session` | l'hôte éphémère a redémarré (nouvelle clé Noise) | nouveau jeton |
+| `this room is already being hosted` | un autre `host start` tourne sur cette room | un seul hôte par room |
+| `wrong passphrase or corrupted sealed file` | passphrase du magasin erronée | ressaisir ; sinon restaurer une sauvegarde du dossier |
+| `the host state could not be saved` | disque plein ou en erreur | libérer de la place, puis `host start` |
 | `refusing to connect … not a .onion address` | jeton pointant vers une IP publique | refusé par conception (pas de clearnet) |
 | `⏳` qui ne passe pas à `🔒` | pair parti ou échange de clés rejeté | `/who`, faire reconnecter le pair |
 | Déconnexion après 2 minutes | client bloqué (pas de PING) | relancer `sanctum join` |

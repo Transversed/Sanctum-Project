@@ -20,6 +20,20 @@ All notable changes to Sanctum. The format follows
   (owner + two members through SOCKS, encrypted sessions, 6/6 messages), with
   timings; runbook §6 adds a two-machine checklist.
 
+- **Persistent rooms, milestone A: a durable room** (`host create --mode
+  persistent`, `host start`, `host list`, `host delete`). The room, its members,
+  revocations and consumed invitations, the Noise host key and the onion key
+  live in one sealed file per room; the same `.onion`, keys and tokens work
+  after a restart or a crash. The host is **headless**: it holds the owner's
+  public key only (`--owner-key`), and the owner connects from their machine
+  with `sanctum join`, where `/invite` and `/kick` work. Admissions and
+  revocations are saved before they are confirmed; a failed save stops the
+  host. Instance lock per room; the store passphrase comes from a systemd
+  credential (`sanctum-host-passphrase`), `SANCTUM_HOST_PASSPHRASE` (tests) or
+  a prompt. `host start` does not print the address unless `--show-address`.
+- Tor: `create_persistent_hidden_service` (no `DiscardPK`, key never written by
+  Tor); onion keys are validated before being sent to the control port.
+- `sanctum identity show` prints the public key.
 - **Sealed file format `SANCTUMS` v1** (`sanctum_crypto::sealed`), the encrypted
   container of the upcoming persistent mode: random master key wrapped by
   Argon2id, XChaCha20-Poly1305 body bound to the authenticated header, one HKDF
@@ -27,6 +41,14 @@ All notable changes to Sanctum. The format follows
   independent Python implementation, checked in CI.
 - `AeadCipher::XChaCha20Poly1305` (24-byte random nonces), tested against the
   draft-irtf-cfrg-xchacha vectors.
+
+### Changed
+
+- `sanctum join` accepts an expired token from a member already admitted (it
+  only locates the room); the host still refuses expired invitations from
+  newcomers.
+- `storage.data_dir` now defaults to `~/.sanctum/hosts` (persistent room stores).
+- Private files are written with an `fsync` of their directory after the rename.
 
 ### Fixed
 

@@ -48,7 +48,7 @@ impl fmt::Display for RoomId {
 pub enum RoomMode {
     /// RAM only, no disk writes, no backlog.
     Ephemeral,
-    /// Encrypted SQLite, backlog, stable .onion.
+    /// Sealed encrypted state on the host, stable .onion.
     Persistent,
 }
 
