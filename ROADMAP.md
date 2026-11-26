@@ -18,7 +18,8 @@ output, known-answer vectors, fuzzing, and a CI that checks all of it. See the
   ports wired into the host.
 - **Sender Keys** for group messages (O(1) encryption per message instead of O(n)),
   with key rotation when membership changes.
-- Membership management: `/kick`, revocation, admin role semantics.
+- Membership management: admin role semantics (`/kick` and invitation
+  revocation are done, see the CHANGELOG).
 - TUI with `ratatui`, local time display, auto-reconnect.
 - Tor client authorization (restricted discovery) for the onion service.
 - `mlock` of key material (via a vetted dependency) and core-dump disabling.

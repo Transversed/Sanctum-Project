@@ -83,6 +83,16 @@ sanctum room invite <fingerprint> --room-onion <onion> --room-port <port> \
 
 (la commande exacte est affichée au lancement de l'hôte).
 
+### Retirer un membre
+
+Dans le chat owner : `/kick <alias|fingerprint>`. Le membre est déconnecté
+(« vous avez été retiré de la room par son owner »), les autres voient
+« a quitté la room » et suppriment sa session. Toutes les invitations émises
+pour lui **avant** le retrait deviennent invalides, y compris un jeton encore
+en attente. Pour le réadmettre, émettre un nouveau jeton avec `/invite`
+(au moins une seconde après le retrait). Le retrait vaut pour la session
+d'hôte en cours : en mode éphémère, un redémarrage repart d'une room vide.
+
 ## 4. Rejoindre et discuter
 
 ```bash
@@ -94,6 +104,7 @@ sanctum join <jeton>
 | `/who` | membres connectés et état du chiffrement (🔒 / ⏳) |
 | `/verify <alias>` | safety number à comparer de vive voix |
 | `/invite <fp> [h]` | (owner) émettre une invitation |
+| `/kick <alias\|fp>` | (owner) retirer un membre et révoquer ses invitations |
 | `/help`, `/exit` | aide, quitter |
 
 Un message n'est envoyé qu'aux membres avec qui le chiffrement est établi ; s'il
@@ -154,6 +165,8 @@ les timeouts (30 s pour le handshake côté hôte, 90 s pour `join`).
 | `stored unencrypted` | clé d'une ancienne version | `sanctum identity protect` |
 | `not a member of this room and no invitation` | pas encore invité | demander un jeton à l'owner |
 | `invitation already used` / `expired` | jeton consommé ou périmé | demander un nouveau jeton |
+| `invitation revoked by the owner` | membre retiré par `/kick` après l'émission du jeton | demander un nouveau jeton à l'owner |
+| `vous avez été retiré de la room par son owner` | `/kick` de l'owner | voir avec l'owner |
 | `invitation is for another host session` | l'hôte a redémarré (nouvelle clé Noise) | nouveau jeton |
 | `refusing to connect … not a .onion address` | jeton pointant vers une IP publique | refusé par conception (pas de clearnet) |
 | `⏳` qui ne passe pas à `🔒` | pair parti ou échange de clés rejeté | `/who`, faire reconnecter le pair |

@@ -103,7 +103,9 @@ Never run `sanctum` with `sudo`. For a local test without Tor, add `--local` to
 ```
 
 Commands: `/who` (members and encryption state), `/verify <alias>` (safety
-number), `/invite <fingerprint> [hours]` (owner), `/help`, `/exit`. Without a
+number), `/invite <fingerprint> [hours]` (owner), `/kick <alias|fingerprint>`
+(owner: removes a member and voids the invitations issued to them before),
+`/help`, `/exit`. Without a
 terminal, `sanctum join` reads lines from stdin and prints one event per line.
 
 ## Modes

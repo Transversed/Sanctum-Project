@@ -49,8 +49,11 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
    The host routes `RatchetKeyExchange` and `RoomMessage` frames to their single
    recipient with the authenticated sender, and stores bundles (one-time prekeys
    handed out once) in RAM only. Limits: `HostLimits` (timeouts, connection cap).
+   A `RoomControl/RevokeMember` from the owner goes through
+   `HostService::revoke_member` and `AuthService::revoke`, then cancels the
+   target's connection task (each connected client has a cancellation token).
 4. With `--chat`, the owner joins its own room as a regular client and can issue
-   invitations with `/invite`.
+   invitations with `/invite` and remove members with `/kick`.
 
 ### Member (`sanctum join <invite>`)
 
@@ -61,7 +64,7 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
 3. `chat_loop` creates a `RoomCrypto` (fresh X25519 keys for this process),
    publishes its bundle, answers `BundleResponse`/`RatchetKeyExchange`, and
    encrypts every message once per peer. Commands: `/who`, `/verify`, `/help`,
-   `/exit` (and `/invite` for the owner).
+   `/exit` (and `/invite`, `/kick` for the owner).
 
 ## 3. State and storage
 
@@ -69,7 +72,7 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
 |------|-------|----------|
 | Identity key | `~/.sanctum/keys/identity.key`, Argon2id + ChaCha20-Poly1305, mode 0600 | Until deleted |
 | Public key, fingerprint, config | `~/.sanctum/` (0600 files, 0700 directory) | Until deleted |
-| Noise host key, room, members, bundles, nonces, used invitations | Host RAM | Host process |
+| Noise host key, room, members, bundles, nonces, used invitations, revocation times | Host RAM | Host process |
 | X25519 keys, ratchet sessions, skipped keys | Member RAM (`Zeroizing`) | Member process |
 
 Nothing is written to disk while hosting or chatting (CI check with `strace`).
