@@ -76,8 +76,8 @@ them the real seams is a prerequisite of multi-transport support (see roadmap).
 | X25519 keys, ratchet sessions, skipped keys | Member RAM (`Zeroizing`) | Member process |
 
 Nothing is written to disk while hosting or chatting (CI check with `strace`).
-`storage_sqlite` and `storage_memory` exist for the future persistent mode but are
-not used by the binary; `--mode persistent` is refused.
+`--mode persistent` is refused until the persistent mode (v0.2) lands: sealed
+encrypted files, no SQLite (see the CHANGELOG and the ROADMAP).
 
 ## 4. Invariants
 

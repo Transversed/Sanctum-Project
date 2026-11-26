@@ -13,7 +13,6 @@ publish.workspace = true
 sanctum-domain.workspace = true
 
 # AEAD ciphers
-aes-gcm.workspace = true
 chacha20poly1305.workspace = true
 
 # Key derivation

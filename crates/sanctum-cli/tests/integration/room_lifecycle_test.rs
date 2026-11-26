@@ -7,15 +7,12 @@ use sanctum_app::room_service::RoomService;
 use sanctum_domain::entities::member::{DisplayAlias, Role};
 use sanctum_domain::entities::room::{RoomConfig, RoomMode};
 use sanctum_infra::identity::IdentityAdapter;
-use sanctum_infra::storage_memory::MemoryStorageAdapter;
 use tokio::sync::broadcast;
 
 #[test]
-fn create_room_and_store_in_memory() {
+fn create_room_with_its_owner() {
     let alice_id = IdentityAdapter::generate();
     let mut room_svc = RoomService::new();
-    let mut storage = MemoryStorageAdapter::new(500);
-
     room_svc
         .create_room(
             "ops-room",
@@ -30,11 +27,7 @@ fn create_room_and_store_in_memory() {
     let room = room_svc.room().unwrap();
     assert_eq!(room.name(), "ops-room");
     assert_eq!(room.active_member_count(), 1);
-
-    storage.store_room(room).unwrap();
-    let loaded = storage.load_room(room.id()).unwrap();
-    assert!(loaded.is_some());
-    assert_eq!(loaded.unwrap().name(), "ops-room");
+    assert!(room.is_authorized(alice_id.fingerprint()));
 }
 
 #[test]

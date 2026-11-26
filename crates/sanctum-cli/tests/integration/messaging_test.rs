@@ -9,7 +9,6 @@ use sanctum_domain::entities::room::{Room, RoomConfig, RoomMode};
 use sanctum_domain::errors::SanctumError;
 use sanctum_domain::ports::crypto::CryptoPort;
 use sanctum_infra::codec::{self, message_types, Frame};
-use sanctum_infra::storage_memory::MemoryStorageAdapter;
 
 struct MockCrypto;
 
@@ -215,42 +214,6 @@ fn padding_preserves_message_content() {
         let unpadded = msg_svc.unpad_message(&padded, &crypto).unwrap();
         assert_eq!(unpadded, msg);
     }
-}
-
-#[test]
-fn message_stored_and_retrieved_from_memory_backlog() {
-    let crypto = MockCrypto;
-    let alice = fp("AA");
-    let bob = fp("BB");
-    let room = make_room();
-
-    let mut msg_svc = MessageService::new(256);
-    msg_svc.register_session(alice.clone());
-    msg_svc.mark_established(&alice);
-
-    let mut storage = MemoryStorageAdapter::new(500);
-
-    for i in 1..=3 {
-        let padded = msg_svc
-            .pad_message(format!("message {i}").as_bytes(), &crypto)
-            .unwrap();
-        let envelope = msg_svc
-            .prepare_envelope(
-                &alice,
-                &bob,
-                room.id(),
-                padded,
-                mock_ratchet_header(),
-                &crypto,
-            )
-            .unwrap();
-        storage.store_message(&bob, &envelope).unwrap();
-    }
-
-    let backlog = storage.fetch_backlog(room.id(), &bob, 0).unwrap();
-    assert_eq!(backlog.len(), 3);
-    assert_eq!(backlog[0].sequence_number(), 1);
-    assert_eq!(backlog[2].sequence_number(), 3);
 }
 
 #[test]

@@ -25,7 +25,6 @@ sanctum-app = { path = "crates/sanctum-app" }
 sanctum-infra = { path = "crates/sanctum-infra" }
 
 # Crypto
-aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
@@ -51,7 +50,6 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "codec"] }
 
 # Storage
-rusqlite = { version = "0.41", features = ["bundled"] }
 
 # CLI / terminal / config
 clap = { version = "4", features = ["derive"] }
